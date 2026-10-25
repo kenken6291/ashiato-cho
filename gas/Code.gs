@@ -9,7 +9,7 @@
  * ※コードを変更したら「デプロイを管理 → 編集 → 新しいバージョン」で再デプロイしないと反映されません
  */
 
-const APP_VERSION = 'v1.3.0';
+const APP_VERSION = 'v1.3.1';
 const MAX_SPAN_MS = 7 * 86400000; // 1つの時間記録の最長（7日）
 const MEDIA_TYPES = ['photo', 'video', 'audio', 'drawing', 'url'];
 const MAX_MEDIA = 6;
@@ -451,6 +451,7 @@ function api_updateLog(req, u) {
   try {
     const hit = findLog_(req.logId, u.obj.userId);
     const cats = [hit.obj.category];
+    const oldPairId = hit.obj.pairId;
     if (f.category !== undefined) {
       const c = String(f.category).trim().slice(0, 20);
       if (!c) throw new Error('カテゴリを空にはできません。');
@@ -461,32 +462,64 @@ function api_updateLog(req, u) {
     if (Array.isArray(f.tags)) hit.obj.tags = JSON.stringify(f.tags.map(t => String(t).slice(0, 20)).slice(0, 10));
     if (f.fun !== undefined) hit.obj.fun = String(Math.max(0, Math.min(3, Math.floor(Number(f.fun) || 0))));
     if (f.start) setEventTime_(hit.obj, f.start);
+
+    // 記録の種類を変える（その場の記録 ⇔ 開始 ⇔ 終了）
+    if (f.kind !== undefined) {
+      const k = isEvent_(f.kind) ? f.kind : 'point';
+      if (k !== (hit.obj.kind || 'point')) {
+        hit.obj.kind = k;
+        if (k === 'point') { hit.obj.pairId = ''; hit.obj.pairAt = ''; hit.obj.pairDateKey = ''; hit.obj.durationMin = ''; }
+      }
+    }
     hit.obj.updatedAt = nowIso_();
     updateRow_(hit.t, hit.idx, hit.obj);
 
-    // ペアになっている相手（開始↔終了）の時刻もいっしょに直す
-    if (f.partner && hit.obj.pairId) {
-      const p = findInTable_(hit.t, hit.obj.pairId);
-      if (p && p.obj.userId === u.obj.userId) {
-        setEventTime_(p.obj, f.partner);
-        if (f.category !== undefined) p.obj.category = hit.obj.category; // 開始と終了のカテゴリはそろえる
-        p.obj.updatedAt = nowIso_();
-        updateRow_(hit.t, p.idx, p.obj);
+    const partner = oldPairId ? findInTable_(hit.t, oldPairId) : null;
+    const partnerOk = partner && partner.obj.userId === u.obj.userId && !toBool_(partner.obj.deleted);
+
+    if (f.removePartner && partnerOk) {
+      // ペアの相手を消す（「開始だけ」「その場の記録」にしたとき）
+      partner.obj.deleted = 'TRUE';
+      partner.obj.updatedAt = nowIso_();
+      updateRow_(hit.t, partner.idx, partner.obj);
+    } else if (f.partner && isEvent_(hit.obj.kind)) {
+      const want = hit.obj.kind === 'start' ? 'end' : 'start';
+      if (partnerOk && partner.obj.kind === want) {
+        // 既存の相手の時刻を直す
+        setEventTime_(partner.obj, f.partner);
+        partner.obj.category = hit.obj.category;
+        partner.obj.updatedAt = nowIso_();
+        updateRow_(hit.t, partner.idx, partner.obj);
+      } else {
+        // 相手がいないので新しく作る
+        if (partnerOk) { partner.obj.deleted = 'TRUE'; updateRow_(hit.t, partner.idx, partner.obj); }
+        const me = new Date(hit.obj.timestamp), other = new Date(f.partner.iso);
+        const diff = want === 'end' ? other - me : me - other;
+        if (isNaN(diff) || diff < 0) throw new Error('終了は開始より後にしてください。');
+        if (diff > MAX_SPAN_MS) throw new Error('開始から終了までは7日以内にしてください。');
+        const p = makeLogObj_(u, {
+          category: hit.obj.category, kind: want, timestamp: other.toISOString(), dateKey: f.partner.dateKey, hour: f.partner.hour,
+          lat: hit.obj.lat, lng: hit.obj.lng, placeName: hit.obj.placeName, address: hit.obj.address || '-', area: hit.obj.area
+        });
+        if (p.address === '-') p.address = '';
+        p.logId = hit.obj.logId + (want === 'end' ? 'E' : 'S') + Math.floor(Math.random() * 90 + 10);
+        appendObj_(SH.LOGS, p);
       }
-    } else if (f.category !== undefined && hit.obj.pairId) {
-      const p = findInTable_(hit.t, hit.obj.pairId);
-      if (p && p.obj.userId === u.obj.userId) { p.obj.category = hit.obj.category; updateRow_(hit.t, p.idx, p.obj); }
+    } else if (f.category !== undefined && partnerOk) {
+      partner.obj.category = hit.obj.category; // 開始と終了のカテゴリはそろえる
+      updateRow_(hit.t, partner.idx, partner.obj);
     }
 
-    if (isEvent_(hit.obj.kind)) {
-      if (cats.indexOf(hit.obj.category) < 0) cats.push(hit.obj.category);
-      const t = table_(SH.LOGS);
-      repairPairs_(t, u.obj.userId, cats);
-      const me = findInTable_(t, hit.obj.logId);
-      const partner = me && me.obj.pairId ? findInTable_(t, me.obj.pairId) : null;
-      return { log: publicLog_(me.obj, { thumbs: true }), partner: partner ? publicLog_(partner.obj, { thumbs: true }) : null, open: openStarts_(t, u.obj.userId) };
-    }
-    return { log: publicLog_(hit.obj, { thumbs: true }) };
+    if (cats.indexOf(hit.obj.category) < 0) cats.push(hit.obj.category);
+    const t = table_(SH.LOGS);
+    repairPairs_(t, u.obj.userId, cats);
+    const me = findInTable_(t, hit.obj.logId);
+    const pair = me && me.obj.pairId ? findInTable_(t, me.obj.pairId) : null;
+    return {
+      log: publicLog_(me.obj, { thumbs: true }),
+      partner: pair ? publicLog_(pair.obj, { thumbs: true }) : null,
+      open: openStarts_(t, u.obj.userId)
+    };
   } finally {
     lock.releaseLock();
   }

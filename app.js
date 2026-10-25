@@ -1,9 +1,9 @@
-/* あしあと帳 — app.js（SPA） v1.3.0 */
+/* あしあと帳 — app.js（SPA） v1.3.1 */
 (() => {
   'use strict';
 
   const CFG = window.APP_CONFIG || {};
-  const VERSION = CFG.VERSION || 'v1.3.0';
+  const VERSION = CFG.VERSION || 'v1.3.1';
   const APP_NAME = CFG.APP_NAME || 'あしあと帳';
   const LS = { token: 'ashiato.token', user: 'ashiato.user', gas: 'ashiato.gasUrl', queue: 'ashiato.queue', mode: 'ashiato.mode' };
 
@@ -1584,18 +1584,14 @@
     f.note.value = l.note || '';
     renderStars($('#edit-stars'), state.editFun, v => { state.editFun = v; });
     const isEv = l.kind === 'start' || l.kind === 'end';
-    $('#edit-title').textContent = l.kind === 'start' ? '「開始」の記録を直す' : l.kind === 'end' ? '「終了」の記録を直す' : '記録を直す';
-    $('#edit-when').textContent = isEv ? l.category + '：' + eventText(l) : fmtDay(l.dateKey, true) + ' ' + fmtTime(l.timestamp);
-    $('#te-type-row').hidden = true;
-    $('#te-main-label').textContent = l.kind === 'start' ? '開始' : l.kind === 'end' ? '終了' : '時刻';
-    f.main.value = toLocalInput(new Date(l.timestamp));
     const hasPartner = isEv && !!l.pairId && !!l.pairAt;
-    $('#edit-time').classList.toggle('partner-first', l.kind === 'end'); // いつも「開始」を上に
-    $('#te-partner-block').hidden = !hasPartner;
-    if (hasPartner) {
-      $('#te-partner-label').textContent = l.kind === 'start' ? '終了' : '開始';
-      f.partner.value = toLocalInput(new Date(l.pairAt));
-    }
+    $('#edit-title').textContent = '記録を直す';
+    $('#edit-when').textContent = isEv ? l.category + '：' + eventText(l) : fmtDay(l.dateKey, true) + ' ' + fmtTime(l.timestamp);
+    $('#te-type-row').hidden = false;
+    f.addType.querySelector('option[value=point]').hidden = false;
+    f.addType.value = hasPartner ? 'both' : (isEv ? l.kind : 'point');
+    f.main.value = toLocalInput(new Date(l.timestamp));
+    f.partner.value = hasPartner ? toLocalInput(new Date(l.pairAt)) : '';
     $('#btn-edit-delete').hidden = false;
     syncTimeEdit();
     openModal('modal-edit');
@@ -1607,6 +1603,7 @@
     state.editFun = 0;
     const f = $('#form-edit');
     f.reset();
+    $('#edit-time').classList.remove('partner-first');
     const now = new Date();
     now.setSeconds(0, 0);
     now.setMinutes(Math.floor(now.getMinutes() / 5) * 5);
@@ -1615,7 +1612,7 @@
     $('#edit-title').textContent = 'あとから追加';
     $('#edit-when').textContent = '押し忘れた開始・終了を、時刻を指定して入れられます。';
     $('#te-type-row').hidden = false;
-    $('#edit-time').classList.remove('partner-first');
+    f.addType.querySelector('option[value=point]').hidden = true;
     f.addType.value = 'both';
     f.main.value = toLocalInput(new Date(now.getTime() - 3600000));
     f.partner.value = toLocalInput(now);
@@ -1631,16 +1628,31 @@
     f.category.innerHTML = labels.map(x => '<option value="' + esc(x) + '"' + (x === current ? ' selected' : '') + '>' + esc(catEmoji(x)) + ' ' + esc(x) + '</option>').join('');
   }
 
+  /** 選んだ種類から、この記録自体が 開始/終了/その場 のどれになるか */
+  function thisKindFromForm() {
+    const t = $('#form-edit').addType.value;
+    if (state.editMode === 'new') return t === 'end' ? 'end' : 'start';
+    if (t === 'both') return state.editing && state.editing.kind === 'end' ? 'end' : 'start';
+    return t;
+  }
+
   /** 時刻入力の表示を整え、開始〜終了の差（所要時間）を出す */
   function syncTimeEdit() {
     const f = $('#form-edit');
     const dur = $('#te-dur');
     dur.classList.remove('bad');
-    if (state.editMode === 'new') {
-      const t = f.addType.value;
-      $('#te-main-label').textContent = t === 'end' ? '終了' : '開始';
-      $('#te-partner-block').hidden = t !== 'both';
-      $('#te-partner-label').textContent = '終了';
+    const type = f.addType.value;
+    const k = thisKindFromForm();
+    const both = type === 'both';
+    $('#te-main-label').textContent = k === 'start' ? '開始' : k === 'end' ? '終了' : '時刻';
+    $('#te-partner-block').hidden = !both;
+    $('#te-partner-label').textContent = k === 'end' ? '開始' : '終了';
+    $('#edit-time').classList.toggle('partner-first', both && k === 'end'); // いつも「開始」を上に
+    if (both && !f.partner.value) {
+      // 相手の時刻が空なら、とりあえず1時間の幅で入れておく
+      const m = fromLocalInput(f.main.value) || new Date();
+      const d = k === 'start' ? new Date(Math.min(Date.now(), m.getTime() + 3600000)) : new Date(m.getTime() - 3600000);
+      f.partner.value = toLocalInput(d);
     }
     const pair = timesFromForm();
     if (!pair.start || !pair.end) { dur.textContent = ''; return; }
@@ -1654,10 +1666,7 @@
     const f = $('#form-edit');
     const main = fromLocalInput(f.main.value);
     const partner = $('#te-partner-block').hidden ? null : fromLocalInput(f.partner.value);
-    let kind;
-    if (state.editMode === 'new') kind = f.addType.value === 'end' ? 'end' : 'start';
-    else kind = state.editing ? state.editing.kind : 'point';
-    if (kind === 'end') return { main: main, partner: partner, start: partner, end: main };
+    if (thisKindFromForm() === 'end') return { main: main, partner: partner, start: partner, end: main };
     return { main: main, partner: partner, start: main, end: partner };
   }
 
@@ -2125,14 +2134,23 @@
           return;
         }
         const fields = common;
+        const type = f.addType.value;
+        const k = thisKindFromForm();
         if (toLocalInput(new Date(l.timestamp)) !== f.main.value) fields.start = timeObj(tm.main);
-        if (tm.partner && l.pairAt && toLocalInput(new Date(l.pairAt)) !== f.partner.value) fields.partner = timeObj(tm.partner);
+        if (k !== (l.kind || 'point')) fields.kind = k;
+        if (type === 'both') {
+          if (!l.pairId || fields.kind || toLocalInput(new Date(l.pairAt)) !== f.partner.value) fields.partner = timeObj(tm.partner);
+        } else if (l.pairId) {
+          const other = l.kind === 'start' ? '終了' : '開始';
+          if (!confirm('ペアになっている「' + other + '」（' + dt(l.pairAt, l.timestamp) + '）の記録を消します。よろしいですか？')) return;
+          fields.removePartner = true;
+        }
         const r = await withLoading('保存しています…', () => api('updateLog', { logId: l.logId, fields: fields }));
         closeModal('modal-edit');
         const endLog = r.log.kind === 'end' ? r.log : r.partner;
         toast('直しました' + (endLog && endLog.pairAt ? '（差：' + fmtMin(endLog.durationMin) + '）' : ''));
         if (r.open) { state.open = r.open; renderOpen(); }
-        if (fields.start || fields.partner || fields.category !== l.category) refreshLists(); else updateLogEverywhere(r.log);
+        if (fields.start || fields.partner || fields.kind || fields.removePartner || fields.category !== l.category) refreshLists(); else updateLogEverywhere(r.log);
       } catch (e) { toast(e.message, 'err'); }
     });
     $('#btn-edit-delete').addEventListener('click', async () => {

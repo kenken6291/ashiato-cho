@@ -372,11 +372,12 @@
     <p class="muted small" id="edit-when"></p>
     <label>やったこと<select name="category" class="select"></select></label>
     <div class="time-edit" id="edit-time">
-      <label class="te-type" id="te-type-row" hidden>追加するもの
+      <label class="te-type" id="te-type-row">記録の種類
         <select name="addType" class="select">
-          <option value="both">開始と終了</option>
-          <option value="start">開始だけ</option>
-          <option value="end">終了だけ</option>
+          <option value="point">📍 その場の記録（時刻だけ）</option>
+          <option value="both">⏱ 開始と終了</option>
+          <option value="start">▶ 開始だけ</option>
+          <option value="end">■ 終了だけ</option>
         </select>
       </label>
       <div class="te-block" id="te-main-block">
