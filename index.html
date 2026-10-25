@@ -110,6 +110,11 @@
         <p id="today-text" class="muted"></p>
       </div>
 
+      <div class="open-box" id="open-box" hidden>
+        <p class="open-h">開始中（まだ「終了」を押していないもの）</p>
+        <ul class="open-list" id="open-list"></ul>
+      </div>
+
       <button type="button" class="capsule-banner" id="capsule-banner" hidden></button>
       <div class="memories" id="memories" hidden></div>
 
@@ -160,8 +165,20 @@
         </div>
       </details>
 
-      <p class="hint" id="rec-hint">やったことをタップすると、いまの場所で記録されます</p>
+      <div class="mode-seg" role="radiogroup" aria-label="記録のしかた">
+        <button type="button" role="radio" data-mode="event">⏱ 開始・終了<small>1回目で開始、2回目で終了</small></button>
+        <button type="button" role="radio" data-mode="point">📍 その場で記録<small>いまの出来事だけ残す</small></button>
+      </div>
+      <p class="hint" id="rec-hint"></p>
       <div class="cat-grid" id="cat-grid"></div>
+
+      <div class="panel time-panel">
+        <div class="time-head">
+          <h3>今日の時間の使い方</h3>
+          <button type="button" class="btn btn-ghost small-btn" id="btn-add-event">＋ あとから追加</button>
+        </div>
+        <div id="today-time"></div>
+      </div>
 
       <h3 class="sec-h">今日のあしあと</h3>
       <ol class="trail" id="today-list"></ol>
@@ -198,6 +215,16 @@
 
       <div id="review-body">
         <dl class="stats" id="stats"></dl>
+
+        <div class="panel" id="time-use-panel">
+          <h3>何に何時間使ったか</h3>
+          <p class="muted small" id="time-use-note"></p>
+          <div class="chart-wrap tall" id="time-use-wrap"><canvas id="ch-time"></canvas></div>
+        </div>
+        <div class="panel" id="time-trend-panel">
+          <h3>時間の使い方の移り変わり</h3>
+          <div class="chart-wrap"><canvas id="ch-time-trend"></canvas></div>
+        </div>
 
         <div class="panel" id="fun-best-panel" hidden>
           <h3>この期間のおもしろベスト</h3>
@@ -344,6 +371,28 @@
     <h3 id="edit-title">記録を直す</h3>
     <p class="muted small" id="edit-when"></p>
     <label>やったこと<select name="category" class="select"></select></label>
+    <div class="time-edit" id="edit-time">
+      <label class="te-type" id="te-type-row" hidden>追加するもの
+        <select name="addType" class="select">
+          <option value="both">開始と終了</option>
+          <option value="start">開始だけ</option>
+          <option value="end">終了だけ</option>
+        </select>
+      </label>
+      <div class="te-block" id="te-main-block">
+        <div class="te-row"><span class="field-label" id="te-main-label">時刻</span><input type="datetime-local" name="main" class="te-input"></div>
+        <div class="te-quick" data-target="main">
+          <button type="button" data-d="-60">−1時間</button><button type="button" data-d="-15">−15分</button><button type="button" data-d="-5">−5分</button><button type="button" data-d="5">＋5分</button><button type="button" data-d="15">＋15分</button><button type="button" data-d="now">いま</button>
+        </div>
+      </div>
+      <div class="te-block" id="te-partner-block">
+        <div class="te-row"><span class="field-label" id="te-partner-label">終了</span><input type="datetime-local" name="partner" class="te-input"></div>
+        <div class="te-quick" data-target="partner">
+          <button type="button" data-d="-60">−1時間</button><button type="button" data-d="-15">−15分</button><button type="button" data-d="-5">−5分</button><button type="button" data-d="5">＋5分</button><button type="button" data-d="15">＋15分</button><button type="button" data-d="now">いま</button>
+        </div>
+      </div>
+      <p class="te-dur" id="te-dur"></p>
+    </div>
     <label>場所の名前<input type="text" name="placeName" maxlength="80"></label>
     <div class="field-row"><span class="field-label">おもしろ度</span><div class="stars" id="edit-stars"></div></div>
     <label>ひとこと<textarea name="note" rows="3" maxlength="500"></textarea></label>

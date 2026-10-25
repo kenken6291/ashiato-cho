@@ -5,6 +5,6 @@
  */
 window.APP_CONFIG = {
   APP_NAME: 'あしあと帳',
-  VERSION: 'v1.1.0',
+  VERSION: 'v1.3.0',
   GAS_URL: 'https://script.google.com/macros/s/AKfycbyrPkFgwJUoHEdlZF1oYJO-qeWaacN7n1DjupTAcw_58sUBxqKHlFLljFTHDNfrDDeC/exec'
 };

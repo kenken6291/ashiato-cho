@@ -1,6 +1,6 @@
 /* あしあと帳 — Service Worker
    アプリ本体はネットワーク優先（更新がすぐ届く）、オフライン時はキャッシュで開く */
-const CACHE = 'ashiato-v1.1.0';
+const CACHE = 'ashiato-v1.3.0';
 const SHELL = ['./', './index.html', './style.css', './app.js', './config.js', './manifest.json', './icon.svg', './icon-192.png', './icon-512.png'];
 const CDN = ['cdnjs.cloudflare.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 

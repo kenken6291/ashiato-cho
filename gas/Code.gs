@@ -2,13 +2,15 @@
  * あしあと帳 — GAS バックエンド（Code.gs）
  * 行動・位置記録 / おもしろ記録（写真・動画・声・絵・URL）/ 会員認証 / Gemini 分析・自動キャプション
  * Gemini TTS / Google Earth Studio 用データ書き出し / タイムカプセル・あの日・ガチャ
+ * 時間記録：「開始」「終了」をそれぞれ時刻として記録し、あとで差分（所要時間）を計算して保存
  *
  * 初回のみ：エディタで setup() を実行 → スクリプトプロパティに GEMINI_API_KEY を設定 → ウェブアプリとしてデプロイ
  * Gemini のモデルはスクリプトプロパティ GEMINI_MODEL / GEMINI_TTS_MODEL / GEMINI_TTS_VOICE で指定（setup() が初期値を入れます）
  * ※コードを変更したら「デプロイを管理 → 編集 → 新しいバージョン」で再デプロイしないと反映されません
  */
 
-const APP_VERSION = 'v1.1.1';
+const APP_VERSION = 'v1.3.0';
+const MAX_SPAN_MS = 7 * 86400000; // 1つの時間記録の最長（7日）
 const MEDIA_TYPES = ['photo', 'video', 'audio', 'drawing', 'url'];
 const MAX_MEDIA = 6;
 const HASH_ROUNDS = 300; // 変更すると既存パスワードが通らなくなるので固定
@@ -17,7 +19,7 @@ const SH = { USERS: 'Users', LOGS: 'Logs', REPORTS: 'Reports', CONFIG: 'Config' 
 
 const HEADERS = {
   Users: ['userId', 'email', 'nickname', 'salt', 'passwordHash', 'mustChange', 'status', 'failCount', 'lockUntil', 'onboarded', 'prefs', 'createdAt', 'lastLoginAt'],
-  Logs: ['logId', 'userId', 'timestamp', 'dateKey', 'hour', 'lat', 'lng', 'accuracy', 'placeName', 'address', 'area', 'category', 'tags', 'note', 'photoFileId', 'createdAt', 'updatedAt', 'deleted', 'fun', 'media', 'capsuleUntil', 'capsuleOpenedAt', 'ai'],
+  Logs: ['logId', 'userId', 'timestamp', 'dateKey', 'hour', 'lat', 'lng', 'accuracy', 'placeName', 'address', 'area', 'category', 'tags', 'note', 'photoFileId', 'createdAt', 'updatedAt', 'deleted', 'fun', 'media', 'capsuleUntil', 'capsuleOpenedAt', 'ai', 'kind', 'endAt', 'endDateKey', 'pairId', 'pairAt', 'pairDateKey', 'durationMin'],
   Reports: ['reportId', 'userId', 'period', 'rangeStart', 'rangeEnd', 'title', 'reportJson', 'script', 'audioFileId', 'createdAt'],
   Config: ['key', 'value', 'note']
 };
@@ -113,6 +115,8 @@ const PRIVATE_API = {
   tts: api_tts,
   exportEarth: api_exportEarth,
   startUpload: api_startUpload,
+  addEventPair: api_addEventPair,
+  getOpen: api_getOpen,
   getMedia: api_getMedia,
   enrichLog: api_enrichLog,
   listFun: api_listFun,
@@ -159,6 +163,7 @@ function setup() {
     if (!props.getProperty(m.key)) props.setProperty(m.key, m.def);
   });
   const root = rootFolder_();
+  migrateSpans_(); // v1.2.0 の「計測」形式を「開始」「終了」の2件に変換
 
   const sheet1 = ss.getSheetByName('シート1') || ss.getSheetByName('Sheet1');
   if (sheet1 && ss.getSheets().length > 1 && sheet1.getLastRow() === 0) ss.deleteSheet(sheet1);
@@ -372,15 +377,33 @@ function publicUser_(o) {
  * ======================================================= */
 
 function api_addLog(req, u) {
-  const l = req.log || {};
+  const obj = makeLogObj_(u, req.log || {});
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    appendObj_(SH.LOGS, obj);
+    if (isEvent_(obj.kind)) {
+      const t = table_(SH.LOGS);
+      repairPairs_(t, u.obj.userId, [obj.category]);
+      const hit = findInTable_(t, obj.logId);
+      return { log: publicLog_(hit ? hit.obj : obj, { thumbs: true }), open: openStarts_(t, u.obj.userId) };
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return { log: publicLog_(obj, { thumbs: true }) };
+}
+
+/** 1件分の記録データを組み立てる（保存はしない） */
+function makeLogObj_(u, l) {
   const category = String(l.category || '').trim().slice(0, 20);
   if (!category) throw new Error('やったこと（カテゴリ）を選んでください。');
   const tz = tz_();
   const now = new Date();
   const ts = l.timestamp && !isNaN(new Date(l.timestamp)) ? new Date(l.timestamp) : now;
-  const dateKey = /^\d{4}-\d{2}-\d{2}$/.test(String(l.dateKey || '')) ? l.dateKey : Utilities.formatDate(ts, tz, 'yyyy-MM-dd');
-  const hourNum = Number(l.hour);
-  const hour = (l.hour !== null && l.hour !== undefined && l.hour !== '' && hourNum >= 0 && hourNum <= 23) ? Math.floor(hourNum) : Number(Utilities.formatDate(ts, tz, 'H'));
+  if (ts.getTime() > now.getTime() + 5 * 60000) throw new Error('未来の時刻は記録できません。');
+  const dateKey = validKey_(l.dateKey) ? l.dateKey : Utilities.formatDate(ts, tz, 'yyyy-MM-dd');
+  const hour = validHour_(l.hour, ts);
 
   const lat = num_(l.lat), lng = num_(l.lng);
   const hasGeo = lat !== null && lng !== null && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
@@ -401,22 +424,19 @@ function api_addLog(req, u) {
   }
   const media = saveMediaList_(u.obj.userId, logId, l.media);
   const fun = Math.max(0, Math.min(3, Math.floor(Number(l.fun) || 0)));
-  const capsuleUntil = /^\d{4}-\d{2}-\d{2}$/.test(String(l.capsuleUntil || '')) && l.capsuleUntil > todayKey_() ? l.capsuleUntil : '';
-
+  const capsuleUntil = validKey_(l.capsuleUntil) && l.capsuleUntil > todayKey_() ? l.capsuleUntil : '';
   const tags = Array.isArray(l.tags) ? l.tags.map(t => String(t).slice(0, 20)).slice(0, 10) : [];
-  const obj = {
+  const kind = isEvent_(l.kind) ? l.kind : 'point';
+  return {
     logId: logId, userId: u.obj.userId, timestamp: ts.toISOString(), dateKey: dateKey, hour: String(hour),
     lat: hasGeo ? lat.toFixed(6) : '', lng: hasGeo ? lng.toFixed(6) : '',
     accuracy: num_(l.accuracy) !== null ? String(Math.round(num_(l.accuracy))) : '',
     placeName: placeName, address: address, area: area, category: category,
     tags: JSON.stringify(tags), note: String(l.note || '').slice(0, 500),
     photoFileId: photoFileId, createdAt: nowIso_(), updatedAt: '', deleted: 'FALSE',
-    fun: String(fun), media: fitMediaJson_(media), capsuleUntil: capsuleUntil, capsuleOpenedAt: '', ai: ''
+    fun: String(fun), media: fitMediaJson_(media), capsuleUntil: capsuleUntil, capsuleOpenedAt: '', ai: '',
+    kind: kind, endAt: '', endDateKey: '', pairId: '', pairAt: '', pairDateKey: '', durationMin: ''
   };
-  const lock = LockService.getScriptLock();
-  lock.waitLock(15000);
-  try { appendObj_(SH.LOGS, obj); } finally { lock.releaseLock(); }
-  return { log: publicLog_(obj, { thumbs: true }) };
 }
 
 function api_listLogs(req, u) {
@@ -427,9 +447,10 @@ function api_listLogs(req, u) {
 function api_updateLog(req, u) {
   const f = req.fields || {};
   const lock = LockService.getScriptLock();
-  lock.waitLock(15000);
+  lock.waitLock(20000);
   try {
     const hit = findLog_(req.logId, u.obj.userId);
+    const cats = [hit.obj.category];
     if (f.category !== undefined) {
       const c = String(f.category).trim().slice(0, 20);
       if (!c) throw new Error('カテゴリを空にはできません。');
@@ -439,17 +460,50 @@ function api_updateLog(req, u) {
     if (f.placeName !== undefined) hit.obj.placeName = String(f.placeName).slice(0, 80);
     if (Array.isArray(f.tags)) hit.obj.tags = JSON.stringify(f.tags.map(t => String(t).slice(0, 20)).slice(0, 10));
     if (f.fun !== undefined) hit.obj.fun = String(Math.max(0, Math.min(3, Math.floor(Number(f.fun) || 0))));
+    if (f.start) setEventTime_(hit.obj, f.start);
     hit.obj.updatedAt = nowIso_();
     updateRow_(hit.t, hit.idx, hit.obj);
+
+    // ペアになっている相手（開始↔終了）の時刻もいっしょに直す
+    if (f.partner && hit.obj.pairId) {
+      const p = findInTable_(hit.t, hit.obj.pairId);
+      if (p && p.obj.userId === u.obj.userId) {
+        setEventTime_(p.obj, f.partner);
+        if (f.category !== undefined) p.obj.category = hit.obj.category; // 開始と終了のカテゴリはそろえる
+        p.obj.updatedAt = nowIso_();
+        updateRow_(hit.t, p.idx, p.obj);
+      }
+    } else if (f.category !== undefined && hit.obj.pairId) {
+      const p = findInTable_(hit.t, hit.obj.pairId);
+      if (p && p.obj.userId === u.obj.userId) { p.obj.category = hit.obj.category; updateRow_(hit.t, p.idx, p.obj); }
+    }
+
+    if (isEvent_(hit.obj.kind)) {
+      if (cats.indexOf(hit.obj.category) < 0) cats.push(hit.obj.category);
+      const t = table_(SH.LOGS);
+      repairPairs_(t, u.obj.userId, cats);
+      const me = findInTable_(t, hit.obj.logId);
+      const partner = me && me.obj.pairId ? findInTable_(t, me.obj.pairId) : null;
+      return { log: publicLog_(me.obj, { thumbs: true }), partner: partner ? publicLog_(partner.obj, { thumbs: true }) : null, open: openStarts_(t, u.obj.userId) };
+    }
     return { log: publicLog_(hit.obj, { thumbs: true }) };
   } finally {
     lock.releaseLock();
   }
 }
 
+function setEventTime_(o, tm) {
+  const d = new Date(tm.iso);
+  if (isNaN(d)) throw new Error('時刻の形式が正しくありません。');
+  if (d.getTime() > Date.now() + 5 * 60000) throw new Error('未来の時刻にはできません。');
+  o.timestamp = d.toISOString();
+  o.dateKey = validKey_(tm.dateKey) ? tm.dateKey : Utilities.formatDate(d, tz_(), 'yyyy-MM-dd');
+  o.hour = String(validHour_(tm.hour, d));
+}
+
 function api_deleteLog(req, u) {
   const lock = LockService.getScriptLock();
-  lock.waitLock(15000);
+  lock.waitLock(20000);
   try {
     const hit = findLog_(req.logId, u.obj.userId);
     hit.obj.deleted = 'TRUE';
@@ -458,6 +512,11 @@ function api_deleteLog(req, u) {
       if (m.fileId) { try { DriveApp.getFileById(m.fileId).setTrashed(true); } catch (e) { } }
     });
     updateRow_(hit.t, hit.idx, hit.obj);
+    if (isEvent_(hit.obj.kind)) {
+      const t = table_(SH.LOGS);
+      repairPairs_(t, u.obj.userId, [hit.obj.category]);
+      return { logId: req.logId, open: openStarts_(t, u.obj.userId) };
+    }
   } finally {
     lock.releaseLock();
   }
@@ -527,8 +586,12 @@ function getUserRawLogs_(userId, from, to) {
     if (String(row[H.userId]) !== userId) return;
     if (toBool_(row[H.deleted])) return;
     const d = String(row[H.dateKey]);
+    const k = String(row[H.kind] || '');
+    if (to && d > to) {
+      // 範囲内に始まり、範囲のあとに終わった「終了」記録は時間集計のために含める
+      if (!(k === 'end' && row[H.pairDateKey] && String(row[H.pairDateKey]) <= to)) return;
+    }
     if (from && d < from) return;
-    if (to && d > to) return;
     out.push(rowToObj_(t.headers, row));
   });
   out.sort((a, b) => a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0);
@@ -563,6 +626,10 @@ function publicLog_(o, opts) {
     fun: Number(o.fun) || 0, media: media, mediaCount: all.length,
     ai: sealed ? {} : parseJson_(o.ai, {}),
     sealed: sealed, capsuleUntil: o.capsuleUntil || '', capsuleOpened: !!o.capsuleOpenedAt,
+    kind: isEvent_(o.kind) ? o.kind : 'point',
+    pairId: o.pairId || '', pairAt: o.pairAt || '', pairDateKey: o.pairDateKey || '',
+    durationMin: o.durationMin !== '' && o.durationMin !== undefined ? Number(o.durationMin) : null,
+    open: o.kind === 'start' && !o.pairId,
     hasPhoto: media.some(m => m.type === 'photo')
   };
 }
@@ -606,12 +673,12 @@ function api_analyze(req, u) {
     funLines.length ? funLines.join('\n') : '（なし）',
     '',
     '次のキーを持つJSONオブジェクトだけを出力してください。',
-    '{"title":"20字以内の見出し","summary":"150〜250字のまとめ","highlights":["印象的なポイント（3〜5個、各40字以内）"],"funBest":"おもしろ発見のふりかえり（100字前後、なければ空文字）","changes":"前半と後半を比べた変化（100字前後）","growth":"続けられていること・成長（100字前後）","nextIdea":"次の期間に試すと楽しそうなこと（80字前後）","script":"音声用の原稿"}',
+    '{"title":"20字以内の見出し","summary":"150〜250字のまとめ","highlights":["印象的なポイント（3〜5個、各40字以内）"],"funBest":"おもしろ発見のふりかえり（100字前後、なければ空文字）","timeUse":"何に何時間使っていたか、時間の使い方の傾向（100字前後。時間の記録がなければ空文字）","changes":"前半と後半を比べた変化（100字前後）","growth":"続けられていること・成長（100字前後）","nextIdea":"次の期間に試すと楽しそうなこと（80字前後）","script":"音声用の原稿"}',
     '',
     'scriptの条件：',
     '- そのまま音声合成に渡す読み上げ原稿の本文だけを書く。最初の一文から' + nickname + 'さんへの語りかけで始める。',
     '- 「読み上げてください」「以下がナレーションです」「ナレーション：」のような指示・前置き・見出し・話者名・ト書き・括弧書き・記号・絵文字・URLは一切入れない。',
-    '- です・ます調で、ゆったり穏やかに。400〜600字。おもしろ発見があれば、そのうち1〜2個を楽しく紹介する。',
+    '- です・ます調で、ゆったり穏やかに。400〜600字。おもしろ発見があれば、そのうち1〜2個を楽しく紹介する。時間の記録があれば、何に多く時間を使ったかにもやさしく触れる（良い悪いの評価はしない）。',
     '- 数字は耳で聞いてわかりやすい言い方にする（例：「12件」→「12件」、「3.4km」→「およそ3キロ」）。'
   ].join('\n');
 
@@ -621,6 +688,7 @@ function api_analyze(req, u) {
     summary: String(res.summary || ''),
     highlights: Array.isArray(res.highlights) ? res.highlights.map(String).slice(0, 6) : [],
     funBest: String(res.funBest || ''),
+    timeUse: String(res.timeUse || ''),
     changes: String(res.changes || ''),
     growth: String(res.growth || ''),
     nextIdea: String(res.nextIdea || ''),
@@ -700,13 +768,14 @@ function publicReport_(o) {
   return {
     reportId: o.reportId, period: o.period, periodLabel: PERIOD_LABEL[o.period] || o.period,
     rangeStart: o.rangeStart, rangeEnd: o.rangeEnd, title: o.title,
-    summary: r.summary || '', highlights: r.highlights || [], funBest: r.funBest || '', changes: r.changes || '',
+    summary: r.summary || '', highlights: r.highlights || [], funBest: r.funBest || '', timeUse: r.timeUse || '', changes: r.changes || '',
     growth: r.growth || '', nextIdea: r.nextIdea || '', script: o.script || '',
     hasAudio: !!o.audioFileId, createdAt: String(o.createdAt)
   };
 }
 
-function stats_(logs, from, to) {
+function stats_(allLogs, from, to) {
+  const logs = allLogs.filter(l => l.kind !== 'end'); // 開始と終了で二重に数えない
   const cat = {}, areas = {}, tags = {}, days = {};
   const hours = new Array(24).fill(0);
   const wd = [0, 0, 0, 0, 0, 0, 0];
@@ -744,7 +813,33 @@ function stats_(logs, from, to) {
     topAreas: top(areas, 8),
     tags: top(tags, 10),
     firstHalfTop: top(first, 5),
-    secondHalfTop: top(second, 5)
+    secondHalfTop: top(second, 5),
+    timeUse: timeUse_(allLogs, from, to)
+  };
+}
+
+/** 期間内の「何に何時間」（範囲外にはみ出た分は切り取る） */
+function timeUse_(logs, from, to) {
+  const tz = tz_();
+  const rs = Utilities.parseDate(from + ' 00:00:00', tz, 'yyyy-MM-dd HH:mm:ss').getTime();
+  const re = Math.min(Date.now(), Utilities.parseDate(to + ' 23:59:59', tz, 'yyyy-MM-dd HH:mm:ss').getTime() + 1000);
+  const min = {};
+  let total = 0;
+  logs.forEach(l => {
+    // 「終了」記録に、ペアの「開始」時刻が入っている
+    if (l.kind !== 'end' || !l.pairAt) return;
+    const s = Math.max(rs, new Date(l.pairAt).getTime());
+    const e = Math.min(re, new Date(l.timestamp).getTime());
+    if (e <= s) return;
+    const m = (e - s) / 60000;
+    min[l.category] = (min[l.category] || 0) + m;
+    total += m;
+  });
+  const days = dayDiff_(from, to) + 1;
+  return {
+    trackedHours: Math.round(total / 6) / 10,
+    avgTrackedHoursPerDay: Math.round(total / days / 6) / 10,
+    byCategory: Object.keys(min).sort((a, b) => min[b] - min[a]).map(k => ({ name: k, hours: Math.round(min[k] / 6) / 10, perDayMin: Math.round(min[k] / days) }))
   };
 }
 
@@ -911,6 +1006,141 @@ function buildKml_(title, stops, frames, route, center, overviewRange) {
   });
   k += '</gx:Playlist></gx:Tour>\n</Document>\n</kml>\n';
   return k;
+}
+
+/* =========================================================
+ * 時間記録：「開始」「終了」はそれぞれ独立した記録。
+ * 同じカテゴリの 開始→終了 をあとからペアにして、差分（分）を「終了」側に保存する。
+ * ======================================================= */
+
+function validKey_(s) { return /^\d{4}-\d{2}-\d{2}$/.test(String(s || '')); }
+function validHour_(h, d) { const n = Number(h); return (h !== null && h !== undefined && h !== '' && n >= 0 && n <= 23) ? Math.floor(n) : Number(Utilities.formatDate(d, tz_(), 'H')); }
+function isEvent_(k) { return k === 'start' || k === 'end'; }
+
+function findInTable_(t, logId) {
+  const H = colIndex_(t.headers);
+  for (let i = 0; i < t.rows.length; i++) {
+    if (String(t.rows[i][H.logId]) === String(logId)) return { t: t, idx: i, obj: rowToObj_(t.headers, t.rows[i]) };
+  }
+  return null;
+}
+
+/**
+ * 指定カテゴリの開始・終了をペアにし直す。
+ * 時刻順に並べ、「終了」が来たら、それより前でまだペアのない一番新しい「開始」と組む（7日以内）。
+ * 組めた「終了」には開始時刻と所要時間（分）を、「開始」には終了時刻を書き込む。
+ */
+function repairPairs_(t, userId, categories) {
+  const H = colIndex_(t.headers);
+  const want = {};
+  (categories || []).forEach(c => { want[String(c)] = true; });
+  const groups = {};
+  t.rows.forEach((row, i) => {
+    if (String(row[H.userId]) !== userId || toBool_(row[H.deleted])) return;
+    const k = String(row[H.kind]);
+    if (!isEvent_(k)) return;
+    const c = String(row[H.category]);
+    if (!want[c]) return;
+    (groups[c] = groups[c] || []).push(i);
+  });
+  const ms = i => new Date(t.rows[i][H.timestamp]).getTime();
+  Object.keys(groups).forEach(c => {
+    const idxs = groups[c].sort((a, b) => (ms(a) - ms(b)) || (String(t.rows[a][H.kind]) === 'start' ? -1 : 1));
+    const next = {};
+    idxs.forEach(i => { next[i] = { pairId: '', pairAt: '', pairDateKey: '', durationMin: '' }; });
+    const open = [];
+    idxs.forEach(i => {
+      if (String(t.rows[i][H.kind]) === 'start') { open.push(i); return; }
+      while (open.length) {
+        const s = open.pop();
+        const diff = ms(i) - ms(s);
+        if (diff < 0) continue;
+        if (diff > MAX_SPAN_MS) { open.length = 0; break; } // それより前の開始はさらに古いので組まない
+        const sr = t.rows[s], er = t.rows[i];
+        next[s] = { pairId: String(er[H.logId]), pairAt: String(er[H.timestamp]), pairDateKey: String(er[H.dateKey]), durationMin: '' };
+        next[i] = { pairId: String(sr[H.logId]), pairAt: String(sr[H.timestamp]), pairDateKey: String(sr[H.dateKey]), durationMin: String(Math.round(diff / 60000)) };
+        break;
+      }
+    });
+    idxs.forEach(i => {
+      const row = t.rows[i];
+      const n = next[i];
+      if (String(row[H.pairId]) === n.pairId && String(row[H.pairAt]) === n.pairAt && String(row[H.pairDateKey]) === n.pairDateKey && String(row[H.durationMin]) === n.durationMin) return;
+      row[H.pairId] = n.pairId; row[H.pairAt] = n.pairAt; row[H.pairDateKey] = n.pairDateKey; row[H.durationMin] = n.durationMin;
+      t.sh.getRange(i + 2, 1, 1, t.headers.length).setValues([row.map(v => (v === null || v === undefined ? '' : String(v)))]);
+    });
+  });
+}
+
+/** まだ終了していない「開始」（7日以内） */
+function openStarts_(t, userId) {
+  const H = colIndex_(t.headers);
+  const limit = Date.now() - MAX_SPAN_MS;
+  const out = [];
+  t.rows.forEach(row => {
+    if (String(row[H.userId]) !== userId || toBool_(row[H.deleted])) return;
+    if (String(row[H.kind]) !== 'start' || row[H.pairId]) return;
+    if (new Date(row[H.timestamp]).getTime() < limit) return;
+    out.push(publicLog_(rowToObj_(t.headers, row), { thumbs: false }));
+  });
+  return out.sort((a, b) => a.timestamp < b.timestamp ? 1 : -1);
+}
+
+function api_getOpen(req, u) {
+  return { open: openStarts_(table_(SH.LOGS), u.obj.userId) };
+}
+
+/** あとから追加：開始と終了をまとめて記録 */
+function api_addEventPair(req, u) {
+  const base = req.log || {};
+  const st = req.start || {}, en = req.end || {};
+  const s = new Date(st.iso), e = new Date(en.iso);
+  if (isNaN(s) || isNaN(e)) throw new Error('時刻の形式が正しくありません。');
+  if (e < s) throw new Error('終了は開始より後にしてください。');
+  if (e - s > MAX_SPAN_MS) throw new Error('開始から終了までは7日以内にしてください。');
+  const so = makeLogObj_(u, Object.assign({}, base, { kind: 'start', timestamp: s.toISOString(), dateKey: st.dateKey, hour: st.hour }));
+  const eo = makeLogObj_(u, Object.assign({}, base, { kind: 'end', timestamp: e.toISOString(), dateKey: en.dateKey, hour: en.hour, media: [], photo: '' }));
+  eo.logId = so.logId + 'E';
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    appendObj_(SH.LOGS, so);
+    appendObj_(SH.LOGS, eo);
+    const t = table_(SH.LOGS);
+    repairPairs_(t, u.obj.userId, [so.category]);
+    return { start: publicLog_(findInTable_(t, so.logId).obj, { thumbs: true }), end: publicLog_(findInTable_(t, eo.logId).obj, { thumbs: true }), open: openStarts_(t, u.obj.userId) };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** v1.2.0 の「計測（span）」形式の行を、開始・終了の2件に変換する（setup から呼ばれる） */
+function migrateSpans_() {
+  const t = table_(SH.LOGS);
+  const H = colIndex_(t.headers);
+  if (H.kind === undefined) return;
+  const touched = {};
+  const adds = [];
+  t.rows.forEach((row, i) => {
+    if (String(row[H.kind]) !== 'span') return;
+    const o = rowToObj_(t.headers, row);
+    if (o.endAt) {
+      const e = new Date(o.endAt);
+      adds.push({
+        logId: o.logId + 'E', userId: o.userId, timestamp: e.toISOString(), dateKey: o.endDateKey || Utilities.formatDate(e, tz_(), 'yyyy-MM-dd'),
+        hour: Utilities.formatDate(e, tz_(), 'H'), category: o.category, tags: '[]', media: '[]', createdAt: nowIso_(), deleted: o.deleted || 'FALSE', fun: '0', kind: 'end'
+      });
+    }
+    o.kind = 'start'; o.endAt = ''; o.endDateKey = '';
+    updateRow_(t, i, o);
+    (touched[o.userId] = touched[o.userId] || {})[o.category] = true;
+  });
+  adds.forEach(a => appendObj_(SH.LOGS, a));
+  if (Object.keys(touched).length) {
+    const t2 = table_(SH.LOGS);
+    Object.keys(touched).forEach(uid => repairPairs_(t2, uid, Object.keys(touched[uid])));
+    Logger.log('v1.2.0 の時間記録を開始・終了の形式に変換しました（' + adds.length + '件の終了を追加）。');
+  }
 }
 
 /* =========================================================

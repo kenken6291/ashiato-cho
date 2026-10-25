@@ -1,4 +1,4 @@
-/* あしあと帳 — style.css v1.1.0
+/* あしあと帳 — style.css v1.3.0
    モチーフ：スタンプ帳（押すたびに朱色の印が残る）＋地図の等高線 */
 
 :root {
@@ -196,17 +196,17 @@ input:focus, textarea:focus, .select:focus { border-color: var(--moss); outline:
 .chip[aria-pressed=true] { background: var(--moss-soft); border-color: var(--moss); color: var(--ink); font-weight: 700; }
 
 .hint { margin: 18px 2px 10px; color: var(--muted); font-size: .9rem; }
-.cat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-@media (min-width: 520px) { .cat-grid { grid-template-columns: repeat(4, 1fr); } }
+.cat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+@media (min-width: 560px) { .cat-grid { grid-template-columns: repeat(5, 1fr); } }
 .cat {
   position: relative; overflow: hidden;
   appearance: none; border: 1.5px solid var(--line); cursor: pointer;
   background: var(--surface); border-radius: var(--r-m);
-  min-height: 92px; padding: 10px 6px;
+  min-height: 78px; padding: 8px 4px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
-  font-weight: 700; font-size: .92rem;
+  font-weight: 700; font-size: .82rem; line-height: 1.25; text-align: center;
 }
-.cat .em { font-size: 1.9rem; line-height: 1; }
+.cat .em { font-size: 1.65rem; line-height: 1; }
 .cat:active { background: var(--surface-2); }
 
 /* 押印 */
@@ -542,3 +542,131 @@ input:focus, textarea:focus, .select:focus { border-color: var(--moss); outline:
 .reveal-vis img { width: 100%; height: 100%; object-fit: cover; }
 .reveal-vis .ico { font-size: 3rem; }
 .reveal-cap { font-family: var(--font-head); font-weight: 700; font-size: 1.15rem; margin: 12px 0 4px; }
+
+
+/* =========================================================
+   v1.2.0 時間記録（開始・終了）と「何に何時間」
+   ========================================================= */
+.running {
+  --run-color: var(--moss);
+  margin-top: 14px; padding: 14px; border-radius: var(--r-l);
+  background: var(--surface); box-shadow: var(--shadow);
+  border: 2px solid var(--run-color);
+}
+.run-top { display: flex; align-items: center; gap: 12px; }
+.run-em {
+  width: 54px; height: 54px; border-radius: 50%; display: grid; place-items: center; font-size: 1.8rem; flex: none;
+  background: color-mix(in srgb, var(--run-color) 18%, var(--surface));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--run-color) 30%, transparent);
+  animation: pulse 2s infinite;
+}
+.run-label { font-weight: 700; }
+.run-time { font-family: var(--font-head); font-size: 2rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.run-start {
+  margin: 8px 0 0; border: 1.5px dashed var(--line); background: var(--surface-2); border-radius: 999px;
+  min-height: 40px; padding: 0 16px; cursor: pointer; font-weight: 700; color: var(--moss);
+}
+.run-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.run-actions .btn { flex: 1; min-width: 140px; }
+
+.mode-seg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 18px; padding: 4px; background: var(--surface-2); border: 1.5px solid var(--line); border-radius: var(--r-m); }
+.mode-seg button {
+  appearance: none; border: 0; border-radius: 10px; background: transparent; cursor: pointer;
+  min-height: 52px; padding: 6px 8px; font-weight: 700; color: var(--muted);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.3;
+}
+.mode-seg button small { font-weight: 400; font-size: .72rem; }
+.mode-seg button[aria-checked=true] { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+.mode-seg button[aria-checked=true] small { color: var(--muted); }
+.hint { margin: 10px 2px 10px; }
+
+.cat.is-running { border-color: var(--moss); background: var(--moss-soft); }
+.cat.is-running::after {
+  content: "計測中"; position: absolute; top: 4px; right: 4px; font-size: .62rem; font-weight: 700;
+  background: var(--moss); color: var(--moss-ink); border-radius: 999px; padding: 0 6px;
+}
+
+.time-panel { margin-top: 22px; }
+.time-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.time-head h3 { margin: 0; }
+.daybar {
+  position: relative; height: 30px; border-radius: 8px; overflow: hidden;
+  background: repeating-linear-gradient(90deg, var(--surface-2) 0 calc(25% - 1px), var(--line) calc(25% - 1px) 25%);
+  border: 1px solid var(--line);
+}
+.daybar .seg { position: absolute; top: 0; bottom: 0; border: 0; padding: 0; cursor: pointer; border-right: 1px solid var(--surface); }
+.daybar .seg.live { background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.25) 0 6px, transparent 6px 12px) !important; }
+.daybar .now-mark { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--shu); }
+.daybar-ticks { display: flex; justify-content: space-between; font-size: .7rem; color: var(--muted); margin: 2px 0 8px; font-variant-numeric: tabular-nums; }
+.time-list { list-style: none; margin: 4px 0 6px; padding: 0; }
+.time-list li { display: grid; grid-template-columns: 7.5em 1fr auto; align-items: center; gap: 8px; padding: 5px 0; font-size: .9rem; }
+.tl-name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-bar { height: 10px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+.tl-bar i { display: block; height: 100%; border-radius: 999px; }
+.tl-val { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; }
+
+.log.is-span { border-left: 5px solid var(--cat-color, var(--moss)); }
+.log.is-live { box-shadow: 0 0 0 2px var(--moss), var(--shadow); }
+.log.is-live .log-time::after { content: " ●"; color: var(--shu); animation: pulse 1.2s infinite; }
+.day-time { background: var(--surface); border-radius: var(--r-m); padding: 10px 10px 6px; margin: -4px 0 12px; box-shadow: var(--shadow); }
+
+.time-edit { display: flex; flex-direction: column; gap: 12px; padding: 12px; border-radius: var(--r-m); background: var(--surface-2); border: 1.5px solid var(--line); }
+.te-block { display: flex; flex-direction: column; gap: 8px; }
+.te-row { display: flex; align-items: center; gap: 8px; }
+.te-row .field-label { min-width: 3.5em; }
+.te-input { flex: 1; min-width: 0; }
+.te-quick { display: flex; flex-wrap: wrap; gap: 6px; }
+.te-quick button {
+  border: 1.5px solid var(--line); background: var(--surface); border-radius: 999px; cursor: pointer;
+  min-height: 38px; padding: 0 12px; font-weight: 700; font-size: .85rem; font-variant-numeric: tabular-nums;
+}
+.te-quick button:active { background: var(--moss-soft); }
+.te-quick button:disabled { opacity: .4; }
+.te-quick button[data-d=now] { color: var(--moss); border-color: var(--moss); }
+.te-dur { font-weight: 700; color: var(--moss); }
+.te-dur.bad { color: var(--shu); }
+.form label.check { flex-direction: row; align-items: center; gap: 8px; font-weight: 400; font-size: .9rem; }
+.check input { width: 22px; height: 22px; accent-color: var(--moss); }
+.chart-wrap.tall { height: auto; min-height: 180px; }
+
+
+/* =========================================================
+   v1.3.0 開始・終了をそれぞれ記録（差分で時間を集計）
+   ========================================================= */
+.open-box {
+  margin-top: 14px; padding: 12px 12px 6px; border-radius: var(--r-l);
+  background: var(--surface); box-shadow: var(--shadow); border: 2px solid var(--moss);
+}
+.open-h { font-family: var(--font-head); font-weight: 700; margin: 0 0 6px 2px; font-size: .95rem; }
+.open-list { list-style: none; margin: 0; padding: 0; }
+.open-list li {
+  display: grid; grid-template-columns: 1fr auto auto; grid-template-areas: "name end edit" "time end edit";
+  align-items: center; column-gap: 8px; padding: 8px 0 8px 10px; border-top: 1px solid var(--line);
+  border-left: 4px solid var(--cat-color, var(--moss));
+}
+.open-list li:first-child { border-top: 0; }
+.ol-name { grid-area: name; font-weight: 700; }
+.ol-time { grid-area: time; font-size: .82rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ol-btn { grid-area: edit; border: 1.5px solid var(--line); background: var(--surface-2); border-radius: 999px; min-height: 40px; min-width: 40px; padding: 0 10px; cursor: pointer; font-weight: 700; }
+.ol-btn.ol-end { grid-area: end; background: var(--shu); border-color: var(--shu); color: #fff; padding: 0 14px; }
+
+.cat.is-open { border-color: var(--moss); background: var(--moss-soft); }
+.cat.is-open::after {
+  content: "■終了 " attr(data-since); position: absolute; top: 3px; left: 3px; right: 3px; font-size: .6rem; font-weight: 700;
+  background: var(--shu); color: #fff; border-radius: 999px; padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cat.is-open .em { margin-top: 8px; }
+
+.daybar .open-mark { width: 4px; margin-left: -2px; background: var(--c); border-right: 0; }
+.daybar .open-mark::after { content: ""; position: absolute; top: 50%; left: 4px; width: 8px; height: 2px; background: var(--c); }
+
+.log.ev-start, .log.ev-end { border-left: 5px solid var(--cat-color, var(--moss)); }
+.log.ev-start .log-time { color: var(--moss); }
+.log.ev-end .log-time { color: var(--shu); }
+.log.is-open { box-shadow: 0 0 0 2px var(--moss), var(--shadow); }
+.log.is-orphan .log-time::after { content: " ⚠"; }
+.log-head .log-time { flex-basis: 100%; font-size: .9rem; }
+
+.te-type { display: flex; flex-direction: column; gap: 6px; font-weight: 700; font-size: .9rem; }
+.time-edit.partner-first #te-partner-block { order: -1; }
+.time-edit #te-type-row { order: -2; }

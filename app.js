@@ -1,19 +1,22 @@
-/* あしあと帳 — app.js（SPA） v1.1.0 */
+/* あしあと帳 — app.js（SPA） v1.3.0 */
 (() => {
   'use strict';
 
   const CFG = window.APP_CONFIG || {};
-  const VERSION = CFG.VERSION || 'v1.1.0';
+  const VERSION = CFG.VERSION || 'v1.3.0';
   const APP_NAME = CFG.APP_NAME || 'あしあと帳';
-  const LS = { token: 'ashiato.token', user: 'ashiato.user', gas: 'ashiato.gasUrl', queue: 'ashiato.queue' };
+  const LS = { token: 'ashiato.token', user: 'ashiato.user', gas: 'ashiato.gasUrl', queue: 'ashiato.queue', mode: 'ashiato.mode' };
 
   const DEFAULT_CATS = [
     { label: 'おもしろ発見', emoji: '🤩' },
-    { label: '仕事', emoji: '💼' }, { label: '散歩', emoji: '🚶' }, { label: '食事', emoji: '🍙' },
-    { label: 'カフェ', emoji: '☕' }, { label: '買い物', emoji: '🛍️' }, { label: '運動', emoji: '🏃' },
-    { label: '趣味', emoji: '🎨' }, { label: '人と会う', emoji: '🤝' }, { label: '移動', emoji: '🚃' },
-    { label: '家のこと', emoji: '🏠' }, { label: '学び', emoji: '📚' }, { label: 'ひと休み', emoji: '🌿' }
+    { label: '仕事', emoji: '💼' }, { label: '移動', emoji: '🚃' }, { label: '睡眠', emoji: '😴' },
+    { label: '食事', emoji: '🍙' }, { label: 'テレビ', emoji: '📺' }, { label: 'スマホ', emoji: '📱' },
+    { label: 'パソコン', emoji: '💻' }, { label: '運動', emoji: '🏃' }, { label: '雑談', emoji: '💬' },
+    { label: '趣味', emoji: '🎨' }, { label: '読書', emoji: '📖' }, { label: '考え事', emoji: '🤔' },
+    { label: '散歩', emoji: '🚶' }, { label: '家のこと', emoji: '🏠' }, { label: '買い物', emoji: '🛍️' },
+    { label: '学び', emoji: '📚' }, { label: '人と会う', emoji: '🤝' }, { label: 'ひと休み', emoji: '🌿' }
   ];
+  const POINT_ONLY = ['おもしろ発見']; // 開始・終了にせず、いつも「その場で記録」になるボタン
   const MOODS = [{ v: '気分：晴れ', t: '☀️ 晴れ' }, { v: '気分：くもり', t: '⛅ くもり' }, { v: '気分：雨', t: '☔ 雨' }];
   const WITHS = ['ひとりで', '家族と', '友だちと', '仕事仲間と'];
   const PERIODS = [
@@ -29,7 +32,7 @@
   const MAX_MEDIA = 6;
   const DIRECT_MAX = 5 * 1024 * 1024;   // これ以下はGAS経由（base64）で送る
   const VIDEO_MAX = 100 * 1024 * 1024;  // 動画の上限（GAS Config の maxUploadMB と合わせる）
-  const PALETTE = ['#2E6B5E', '#E3A72F', '#4C7A9F', '#B8432F', '#8A6FB0', '#5E9E6E', '#C97B3C', '#3E8E9E', '#9C6B57', '#6F7F3A', '#C2577C', '#7A8A8E'];
+  const PALETTE = ['#2E6B5E', '#E3A72F', '#4C7A9F', '#B8432F', '#8A6FB0', '#5E9E6E', '#C97B3C', '#3E8E9E', '#9C6B57', '#6F7F3A', '#C2577C', '#7A8A8E', '#D08C9A', '#55707F', '#A0A040', '#7E5BA6', '#3F9C82', '#C8643B', '#6B8FC7'];
   const DRAW_COLORS = ['#1E2B33', '#2E6B5E', '#3E6FB0', '#E3A72F', '#B8432F', '#C2577C', '#7A5230'];
   const DRAW_SIZES = [3, 7, 14];
   const WD = ['日', '月', '火', '水', '木', '金', '土'];
@@ -64,6 +67,10 @@
     funOffset: 0,
     capsules: [],
     pendingShare: null,
+    open: [],
+    recMode: lsGet('ashiato.mode') === 'point' ? 'point' : 'event',
+    editMode: 'edit',
+    todayLogs: [],
     guideStep: 0,
     guideFirst: false
   };
@@ -97,6 +104,54 @@
   function blobToDataUrl(blob) {
     return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(new Error('ファイルを読み込めませんでした')); r.readAsDataURL(blob); });
   }
+  function fmtMin(m) {
+    m = Math.round(m || 0);
+    const h = Math.floor(m / 60), mm = m % 60;
+    return h ? h + '時間' + (mm ? mm + '分' : '') : mm + '分';
+  }
+  function toLocalInput(d) { return ymd(d) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+  function fromLocalInput(v) { if (!v) return null; const d = new Date(v); return isNaN(d) ? null : d; }
+  function timeObj(d) { return { iso: d.toISOString(), dateKey: ymd(d), hour: d.getHours() }; }
+  function dayStartMs(key) { const d = parseYmd(key); d.setHours(0, 0, 0, 0); return d.getTime(); }
+  function catColor(label) {
+    const i = state.cats.findIndex(c => c.label === label);
+    if (i >= 0) return PALETTE[i % PALETTE.length];
+    let h = 0; for (const ch of String(label)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return PALETTE[h % PALETTE.length];
+  }
+  /** 「終了」記録（開始時刻つき）を日ごとに切り分けて分数を集計 → { 'YYYY-MM-DD': { カテゴリ: 分 } } */
+  function minutesByDay(logs, fromMs, toMs) {
+    const out = {};
+    logs.forEach(l => {
+      if (l.kind !== 'end' || !l.pairAt) return;
+      let s = Math.max(fromMs, new Date(l.pairAt).getTime());
+      const e = Math.min(toMs, new Date(l.timestamp).getTime());
+      while (s < e) {
+        const d = new Date(s);
+        const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
+        const k = ymd(d);
+        (out[k] = out[k] || {})[l.category] = (out[k][l.category] || 0) + (Math.min(e, next) - s) / 60000;
+        s = Math.min(e, next);
+      }
+    });
+    return out;
+  }
+  function sumByCat(byDay) {
+    const t = {};
+    Object.values(byDay).forEach(day => Object.keys(day).forEach(c => { t[c] = (t[c] || 0) + day[c]; }));
+    return t;
+  }
+  function dt(iso, ref) {
+    const d = new Date(iso);
+    return (ref && ymd(d) !== ymd(new Date(ref)) ? (d.getMonth() + 1) + '/' + d.getDate() + ' ' : '') + fmtTime(iso);
+  }
+  /** 開始・終了の表示文 */
+  function eventText(l) {
+    if (l.kind === 'start') return '▶ 開始 ' + fmtTime(l.timestamp) + (l.pairAt ? '　→ ' + dt(l.pairAt, l.timestamp) + ' 終了' : '　（終了待ち）');
+    if (l.kind === 'end') return '■ 終了 ' + fmtTime(l.timestamp) + (l.pairAt ? '　（' + dt(l.pairAt, l.timestamp) + 'から ' + fmtMin(l.durationMin) + '）' : '　（開始の記録なし）');
+    return fmtTime(l.timestamp);
+  }
+  function openFor(label) { return state.open.find(o => o.category === label); }
   function hostOf(url) { try { return new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return url; } }
 
   function toast(msg, type) {
@@ -351,6 +406,8 @@
     flushQueue(false);
     loadCapsules();
     loadMemories();
+    renderMode();
+    loadOpen();
     if (state.pendingShare) {
       addAttach({ type: 'url', url: state.pendingShare.url, title: state.pendingShare.title });
       state.pendingShare = null;
@@ -371,8 +428,31 @@
       if (b) onCatTap(state.cats[Number(b.dataset.i)], b);
     });
     $('#btn-mic').addEventListener('click', toggleDictation);
+    $$('.mode-seg button').forEach(b => b.addEventListener('click', () => {
+      state.recMode = b.dataset.mode;
+      lsSet(LS.mode, state.recMode);
+      renderMode();
+    }));
+    $('#open-list').addEventListener('click', ev => {
+      const b = ev.target.closest('button[data-act]');
+      if (!b) return;
+      const o = state.open.find(x => x.logId === b.dataset.id);
+      if (!o) return;
+      if (b.dataset.act === 'end') endCategory(o.category);
+      else openEdit(o);
+    });
+    $('#btn-add-event').addEventListener('click', openNewEvent);
+    $('#today-time').addEventListener('click', ev => {
+      const seg = ev.target.closest('[data-id]');
+      if (seg && state.logIndex[seg.dataset.id] && !state.logIndex[seg.dataset.id].pending) openEdit(state.logIndex[seg.dataset.id]);
+    });
 
-    ['#today-list', '#history-list', '#fun-grid', '#fun-best', '#memories'].forEach(sel => $(sel).addEventListener('click', onLogClick));
+    ['#today-list', '#fun-grid', '#fun-best', '#memories'].forEach(sel => $(sel).addEventListener('click', onLogClick));
+    $('#history-list').addEventListener('click', ev => {
+      const seg = ev.target.closest('.seg[data-id]');
+      if (seg) { const l = state.logIndex[seg.dataset.id]; if (l) openEdit(l); return; }
+      onLogClick(ev);
+    });
     $('#btn-history-more').addEventListener('click', () => { state.historyDays += 30; loadHistory(); });
 
     // おもしろ箱
@@ -471,7 +551,7 @@
     const custom = ((state.user && state.user.prefs && state.user.prefs.customCats) || []);
     state.cats = DEFAULT_CATS.concat(custom);
     $('#cat-grid').innerHTML = state.cats.map((c, i) =>
-      '<button type="button" class="cat' + (i === 0 ? ' cat-fun' : '') + '" data-i="' + i + '"><span class="em" aria-hidden="true">' + esc(c.emoji) + '</span>' + esc(c.label) + '</button>'
+      '<button type="button" class="cat' + (i === 0 ? ' cat-fun' : '') + (openFor(c.label) ? ' is-open' : '') + '" data-i="' + i + '"><span class="em" aria-hidden="true">' + esc(c.emoji) + '</span>' + esc(c.label) + '</button>'
     ).join('');
   }
 
@@ -538,11 +618,15 @@
     return days ? ymd(addDays(new Date(), days)) : '';
   }
 
-  async function onCatTap(cat, btn) {
+  async function onCatTap(cat, btn, opts) {
+    opts = opts || {};
     if (!cat || state.saving) return;
+    const asEvent = (opts.forceEvent || state.recMode === 'event') && POINT_ONLY.indexOf(cat.label) < 0;
+    // 開始中なら「終了」、そうでなければ「開始」
+    const eventKind = asEvent ? (openFor(cat.label) ? 'end' : 'start') : '';
     state.saving = true;
     stopDictation();
-    stamp(btn);
+    if (btn) stamp(btn, eventKind);
     const now = new Date();
     const g = state.gps.status === 'ok' ? state.gps : {};
     const base = {
@@ -553,6 +637,7 @@
       fun: state.fun || (state.attach.length || cat.label === 'おもしろ発見' ? 1 : 0),
       capsuleUntil: capsuleDate()
     };
+    if (asEvent) base.kind = eventKind;
     const hasMedia = state.attach.length > 0;
     try {
       if (hasMedia) loading(true, 'おもしろを送っています…');
@@ -560,9 +645,17 @@
       if (hasMedia) $('#loading-text').textContent = '記録しています…';
       const r = await api('addLog', { log: Object.assign({}, base, { media: media }) });
       loading(false);
-      toast(base.capsuleUntil ? '🔒 タイムカプセルに入れました（' + fmtShort(base.capsuleUntil) + 'に開けられます）' : cat.emoji + ' ' + cat.label + 'を記録しました');
       resetForm();
-      prependToday(r.log);
+      if (asEvent) {
+        if (r.open) { state.open = r.open; renderOpen(); }
+        if (eventKind === 'start') toast('▶ ' + cat.emoji + ' ' + cat.label + ' 開始 ' + fmtTime(r.log.timestamp));
+        else if (r.log.pairAt) toast('■ ' + cat.emoji + ' ' + cat.label + ' 終了 ' + fmtTime(r.log.timestamp) + '（' + fmtMin(r.log.durationMin) + '）');
+        else toast('■ ' + cat.label + ' 終了を記録しました（対応する開始が見つかりません。「＋ あとから追加」で開始を入れられます）');
+        loadToday();
+      } else {
+        toast(base.capsuleUntil ? '🔒 タイムカプセルに入れました（' + fmtShort(base.capsuleUntil) + 'に開けられます）' : cat.emoji + ' ' + cat.label + 'を記録しました');
+        prependToday(r.log);
+      }
       if (r.log.mediaCount) enrichLater(r.log.logId);
     } catch (e) {
       loading(false);
@@ -589,6 +682,8 @@
       if (!enqueue(log)) { toast('端末の保存領域が足りません。電波のある場所で送ってください（入力は残しています）', 'err'); return; }
       toast('電波がないので端末に一時保存しました。つながったら送ります');
       resetForm();
+      if (base.kind === 'start') { state.open.unshift(Object.assign({}, log, { logId: 'pending-' + Date.now(), pending: true, open: true })); renderOpen(); }
+      if (base.kind === 'end') { const o = openFor(base.category); if (o) { state.open = state.open.filter(x => x !== o); renderOpen(); } }
       prependToday(Object.assign({}, log, { logId: 'pending-' + Date.now(), pending: true, mediaCount: media.length, media: media.map(m => ({ type: m.type, thumb: m.thumb, url: m.url })) }));
     } catch (e) { toast(e.message, 'err'); }
   }
@@ -634,13 +729,13 @@
     if (state.detailId === log.logId && !$('#modal-detail').hidden) renderDetail(log);
   }
 
-  function stamp(btn) {
+  function stamp(btn, eventKind) {
     const old = $('.stamp-mark', btn);
     if (old) old.remove();
     const m = document.createElement('span');
     m.className = 'stamp-mark';
     const d = new Date();
-    m.innerHTML = '記録<br>' + (d.getMonth() + 1) + '.' + d.getDate();
+    m.innerHTML = (eventKind === 'start' ? '開始' : eventKind === 'end' ? '終了' : '記録') + '<br>' + pad(d.getHours()) + ':' + pad(d.getMinutes());
     btn.appendChild(m);
     if (navigator.vibrate) navigator.vibrate(30);
     setTimeout(() => m.remove(), 1200);
@@ -657,6 +752,96 @@
     renderStars($('#rec-stars'), 0, v => { state.fun = v; });
     $('#rec-capsule').value = '';
     $('#extras').open = false;
+  }
+
+  /* ---------- 時間記録（開始・終了をそれぞれ記録） ---------- */
+  function renderMode() {
+    $$('.mode-seg button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.mode === state.recMode)));
+    updateHint();
+  }
+  function updateHint() {
+    const el = $('#rec-hint');
+    if (!el) return;
+    if (state.attach.length) el.textContent = '添付できました。やったことを押すと、おもしろと一緒に記録されます';
+    else if (state.recMode === 'event') el.textContent = '1回押すと「開始」、もう一度押すと「終了」の時刻を記録します。いくつ同時に開始していても大丈夫です（🤩おもしろ発見はその場の記録）';
+    else el.textContent = 'やったことをタップすると、いまの時刻と場所で記録されます';
+  }
+
+  async function loadOpen() {
+    try {
+      const r = await api('getOpen');
+      state.open = r.open.concat(state.open.filter(o => o.pending));
+      renderOpen();
+    } catch (e) { }
+  }
+
+  /** 開始中のリストと、ボタンの「開始中」表示 */
+  function renderOpen() {
+    const box = $('#open-box');
+    box.hidden = !state.open.length;
+    $('#open-list').innerHTML = state.open.map(o => {
+      state.logIndex[o.logId] = o;
+      const d = new Date(o.timestamp);
+      const when = (ymd(d) !== ymd(new Date()) ? (d.getMonth() + 1) + '/' + d.getDate() + ' ' : '') + fmtTime(o.timestamp);
+      return '<li style="--cat-color:' + catColor(o.category) + '"><span class="ol-name">' + esc(catEmoji(o.category)) + ' ' + esc(o.category) + '</span>' +
+        '<span class="ol-time">' + when + ' 開始' + (o.pending ? '（送信待ち）' : '') + '</span>' +
+        (o.pending ? '' : '<button type="button" class="ol-btn ol-end" data-act="end" data-id="' + esc(o.logId) + '">■ 終了</button><button type="button" class="ol-btn" data-act="edit" data-id="' + esc(o.logId) + '">✎</button>') + '</li>';
+    }).join('');
+    $$('.cat').forEach(b => {
+      const c = state.cats[Number(b.dataset.i)];
+      const o = c && openFor(c.label);
+      b.classList.toggle('is-open', !!o);
+      if (o) b.dataset.since = fmtTime(o.timestamp) + '〜'; else delete b.dataset.since;
+    });
+  }
+
+  function endCategory(label) {
+    const cat = state.cats.find(c => c.label === label) || { label: label, emoji: catEmoji(label) };
+    const btn = $$('.cat').find(b => state.cats[Number(b.dataset.i)] && state.cats[Number(b.dataset.i)].label === label);
+    onCatTap(cat, btn, { forceEvent: true });
+  }
+
+  /** 1日の帯グラフ（0〜24時） */
+  function dayBarHtml(dateKey, logs) {
+    const ds = dayStartMs(dateKey), de = ds + 86400000;
+    const now = Date.now();
+    const segs = logs.filter(l => l.kind === 'end' && l.pairAt).map(l => {
+      const s = Math.max(ds, new Date(l.pairAt).getTime());
+      const e = Math.min(de, new Date(l.timestamp).getTime());
+      if (e <= s) return '';
+      state.logIndex[l.logId] = state.logIndex[l.logId] || l;
+      const left = (s - ds) / 864e3, width = Math.max(0.4, (e - s) / 864e3);
+      const label = l.category + ' ' + dt(l.pairAt, l.timestamp) + '〜' + fmtTime(l.timestamp) + '（' + fmtMin(l.durationMin) + '）';
+      return '<button type="button" class="seg" data-id="' + esc(l.logId) + '" style="left:' + left.toFixed(2) + '%;width:' + width.toFixed(2) + '%;background:' + catColor(l.category) + '" title="' + esc(label) + '" aria-label="' + esc(label) + '"></button>';
+    }).join('') + logs.filter(l => l.kind === 'start' && !l.pairAt).map(l => {
+      const s = new Date(l.timestamp).getTime();
+      if (s < ds || s >= de) return '';
+      state.logIndex[l.logId] = state.logIndex[l.logId] || l;
+      return '<button type="button" class="seg open-mark" data-id="' + esc(l.logId) + '" style="left:' + ((s - ds) / 864e3).toFixed(2) + '%;--c:' + catColor(l.category) + '" title="' + esc(l.category + ' ' + fmtTime(l.timestamp) + ' 開始（終了待ち）') + '" aria-label="' + esc(l.category + ' 開始 終了待ち') + '"></button>';
+    }).join('');
+    const nowMark = (now > ds && now < de) ? '<span class="now-mark" style="left:' + ((now - ds) / 864e3).toFixed(2) + '%"></span>' : '';
+    return '<div class="daybar">' + segs + nowMark + '</div><div class="daybar-ticks"><span>0時</span><span>6</span><span>12</span><span>18</span><span>24</span></div>';
+  }
+
+  function renderTodayTime() {
+    const box = $('#today-time');
+    if (!box) return;
+    const key = ymd(new Date());
+    const logs = state.todayLogs;
+    const byDay = minutesByDay(logs, dayStartMs(key), dayStartMs(key) + 86400000);
+    const tot = byDay[key] || {};
+    const cats = Object.keys(tot).sort((a, b) => tot[b] - tot[a]);
+    if (!cats.length) {
+      box.innerHTML = dayBarHtml(key, logs) + '<p class="muted small">⏱「開始・終了」でボタンを押して開始、もう一度押して終了すると、その差が何に何時間使ったかとしてここに出てきます。押し忘れたときは「＋ あとから追加」で。</p>';
+      return;
+    }
+    const max = tot[cats[0]];
+    const sum = cats.reduce((a, c) => a + tot[c], 0);
+    box.innerHTML = dayBarHtml(key, logs) +
+      '<ul class="time-list">' + cats.map(c =>
+        '<li><span class="tl-name">' + esc(catEmoji(c)) + ' ' + esc(c) + '</span><span class="tl-bar"><i style="width:' + (tot[c] / max * 100).toFixed(1) + '%;background:' + catColor(c) + '"></i></span><span class="tl-val">' + fmtMin(tot[c]) + '</span></li>'
+      ).join('') + '</ul>' +
+      '<p class="muted small">今日の合計：' + fmtMin(sum) + '（帯をタップすると開始・終了の時刻を直せます）</p>';
   }
 
   /* ---------- 話して入力（間が空いても聞き取り続ける） ---------- */
@@ -797,9 +982,7 @@
       else if (a.blob) info += ' ' + fmtSize(a.blob.size);
       return '<li>' + vis + '<span class="tray-info">' + esc(info) + '</span><button type="button" class="tray-rm" data-rm="' + i + '" aria-label="' + esc(MEDIA_NAME[a.type]) + 'を外す">✕</button></li>';
     }).join('');
-    $('#rec-hint').textContent = state.attach.length
-      ? '添付できました。やったことを押すと、おもしろと一緒に記録されます'
-      : 'やったことをタップすると、いまの場所で記録されます';
+    updateHint();
   }
 
   /* 写真 */
@@ -1079,10 +1262,13 @@
         (l.note ? '<div class="log-note">' + esc(l.note) + '</div>' : '') +
         (tags ? '<div class="log-tags">' + tags + '</div>' : '');
     }
-    const acts = l.pending ? '<span class="muted small">送信待ち</span>' : '<button type="button" data-act="edit">直す</button>';
-    return '<li class="log' + (l.pending ? ' pending' : '') + (l.fun ? ' is-fun' : '') + '" data-id="' + esc(l.logId) + '">' +
-      '<div class="log-head"><span class="log-time">' + fmtTime(l.timestamp) + '</span>' +
-      '<span class="log-cat">' + esc(catEmoji(l.category)) + ' ' + esc(l.category) + '</span>' +
+    const isEv = l.kind === 'start' || l.kind === 'end';
+    const acts = l.pending ? '<span class="muted small">送信待ち</span>' :
+      (l.kind === 'start' && !l.pairAt ? '<button type="button" data-act="end">■ 終了する</button>' : '') + '<button type="button" data-act="edit">' + (isEv ? '時刻を直す' : '直す') + '</button>';
+    const cls = ' ev-' + (l.kind || 'point') + (l.kind === 'start' && !l.pairAt ? ' is-open' : '') + (l.kind === 'end' && !l.pairAt ? ' is-orphan' : '');
+    return '<li class="log' + (l.pending ? ' pending' : '') + (l.fun ? ' is-fun' : '') + cls + '" data-id="' + esc(l.logId) + '"' + (isEv ? ' style="--cat-color:' + catColor(l.category) + '"' : '') + '>' +
+      '<div class="log-head"><span class="log-cat">' + esc(catEmoji(l.category)) + ' ' + esc(l.category) + '</span>' +
+      '<span class="log-time">' + esc(isEv ? eventText(l) : fmtTime(l.timestamp)) + '</span>' +
       (l.fun ? '<span class="log-star" aria-label="おもしろ度' + l.fun + '">' + starsText(l.fun) + '</span>' : '') + '</div>' +
       '<div class="log-place">' + esc(place) + '</div>' + body +
       '<div class="log-actions">' + acts + '</div></li>';
@@ -1111,8 +1297,10 @@
       const r = await api('listLogs', { from: today, to: today, thumbs: true });
       const pend = getQueue().filter(q => q.dateKey === today).map((q, i) => Object.assign({}, q, { logId: 'pending-' + i, pending: true, mediaCount: (q.media || []).length, media: (q.media || []).map(m => ({ type: m.type, thumb: m.thumb, url: m.url })) }));
       const logs = r.logs.concat(pend).sort((a, b) => a.timestamp < b.timestamp ? 1 : -1);
+      state.todayLogs = r.logs;
       list.innerHTML = logs.map(logHtml).join('');
       toggleTodayEmpty(!logs.length);
+      renderTodayTime();
     } catch (e) {
       if (!e.network) toast(e.message, 'err');
     }
@@ -1140,10 +1328,16 @@
       }
       const groups = {};
       r.logs.forEach(l => { (groups[l.dateKey] = groups[l.dateKey] || []).push(l); });
+      const byDay = minutesByDay(r.logs, dayStartMs(ymd(from)), Date.now());
+      Object.keys(byDay).forEach(d => { groups[d] = groups[d] || []; });
       const thisYear = new Date().getFullYear();
       box.innerHTML = Object.keys(groups).sort().reverse().map(d => {
         const arr = groups[d].sort((a, b) => a.timestamp < b.timestamp ? 1 : -1);
-        return '<div class="day-h"><span>' + fmtDay(d, parseYmd(d).getFullYear() !== thisYear) + '</span><span class="count">' + arr.length + '件</span></div>' +
+        const mins = byDay[d] || {};
+        const total = Object.values(mins).reduce((a, b) => a + b, 0);
+        const top = Object.keys(mins).sort((a, b) => mins[b] - mins[a]).slice(0, 3).map(c => catEmoji(c) + fmtMin(mins[c])).join('　');
+        return '<div class="day-h"><span>' + fmtDay(d, parseYmd(d).getFullYear() !== thisYear) + '</span><span class="count">' + arr.length + '件' + (total ? '・計測 ' + fmtMin(total) : '') + '</span></div>' +
+          (total ? '<div class="day-time">' + dayBarHtml(d, r.logs) + '<p class="small muted">' + esc(top) + '</p></div>' : '') +
           '<ol class="trail">' + arr.map(logHtml).join('') + '</ol>';
       }).join('');
     } catch (e) {
@@ -1158,6 +1352,7 @@
     if (!l || l.pending) return;
     const act = ev.target.closest('[data-act]');
     if (act && act.dataset.act === 'edit') { openEdit(l); return; }
+    if (act && act.dataset.act === 'end') { endCategory(l.category); return; }
     openDetail(l.logId);
   }
 
@@ -1376,19 +1571,94 @@
   }
 
   /* ================= 編集 ================= */
-  function openEdit(l) {
+  function openEdit(l, opts) {
+    opts = opts || {};
     if (l.sealed) { toast('タイムカプセルは開封日まで直せません'); return; }
+    if (l.pending) { toast('送信待ちの記録は、送られてから直せます'); return; }
+    state.editMode = 'edit';
     state.editing = l;
     state.editFun = l.fun || 0;
     const f = $('#form-edit');
-    const labels = state.cats.map(c => c.label);
-    if (labels.indexOf(l.category) < 0) labels.push(l.category);
-    f.category.innerHTML = labels.map(x => '<option' + (x === l.category ? ' selected' : '') + '>' + esc(x) + '</option>').join('');
+    fillCategorySelect(f, l.category, l.kind === 'start' || l.kind === 'end');
     f.placeName.value = l.placeName || '';
     f.note.value = l.note || '';
     renderStars($('#edit-stars'), state.editFun, v => { state.editFun = v; });
-    $('#edit-when').textContent = fmtDay(l.dateKey, true) + ' ' + fmtTime(l.timestamp);
+    const isEv = l.kind === 'start' || l.kind === 'end';
+    $('#edit-title').textContent = l.kind === 'start' ? '「開始」の記録を直す' : l.kind === 'end' ? '「終了」の記録を直す' : '記録を直す';
+    $('#edit-when').textContent = isEv ? l.category + '：' + eventText(l) : fmtDay(l.dateKey, true) + ' ' + fmtTime(l.timestamp);
+    $('#te-type-row').hidden = true;
+    $('#te-main-label').textContent = l.kind === 'start' ? '開始' : l.kind === 'end' ? '終了' : '時刻';
+    f.main.value = toLocalInput(new Date(l.timestamp));
+    const hasPartner = isEv && !!l.pairId && !!l.pairAt;
+    $('#edit-time').classList.toggle('partner-first', l.kind === 'end'); // いつも「開始」を上に
+    $('#te-partner-block').hidden = !hasPartner;
+    if (hasPartner) {
+      $('#te-partner-label').textContent = l.kind === 'start' ? '終了' : '開始';
+      f.partner.value = toLocalInput(new Date(l.pairAt));
+    }
+    $('#btn-edit-delete').hidden = false;
+    syncTimeEdit();
     openModal('modal-edit');
+  }
+
+  function openNewEvent() {
+    state.editMode = 'new';
+    state.editing = null;
+    state.editFun = 0;
+    const f = $('#form-edit');
+    f.reset();
+    const now = new Date();
+    now.setSeconds(0, 0);
+    now.setMinutes(Math.floor(now.getMinutes() / 5) * 5);
+    const cat = state.cats.find(c => POINT_ONLY.indexOf(c.label) < 0);
+    fillCategorySelect(f, cat ? cat.label : '', true);
+    $('#edit-title').textContent = 'あとから追加';
+    $('#edit-when').textContent = '押し忘れた開始・終了を、時刻を指定して入れられます。';
+    $('#te-type-row').hidden = false;
+    $('#edit-time').classList.remove('partner-first');
+    f.addType.value = 'both';
+    f.main.value = toLocalInput(new Date(now.getTime() - 3600000));
+    f.partner.value = toLocalInput(now);
+    $('#btn-edit-delete').hidden = true;
+    renderStars($('#edit-stars'), 0, v => { state.editFun = v; });
+    syncTimeEdit();
+    openModal('modal-edit');
+  }
+
+  function fillCategorySelect(f, current, spanOnly) {
+    const labels = state.cats.map(c => c.label).filter(x => !spanOnly || POINT_ONLY.indexOf(x) < 0);
+    if (current && labels.indexOf(current) < 0) labels.push(current);
+    f.category.innerHTML = labels.map(x => '<option value="' + esc(x) + '"' + (x === current ? ' selected' : '') + '>' + esc(catEmoji(x)) + ' ' + esc(x) + '</option>').join('');
+  }
+
+  /** 時刻入力の表示を整え、開始〜終了の差（所要時間）を出す */
+  function syncTimeEdit() {
+    const f = $('#form-edit');
+    const dur = $('#te-dur');
+    dur.classList.remove('bad');
+    if (state.editMode === 'new') {
+      const t = f.addType.value;
+      $('#te-main-label').textContent = t === 'end' ? '終了' : '開始';
+      $('#te-partner-block').hidden = t !== 'both';
+      $('#te-partner-label').textContent = '終了';
+    }
+    const pair = timesFromForm();
+    if (!pair.start || !pair.end) { dur.textContent = ''; return; }
+    const m = (pair.end - pair.start) / 60000;
+    if (m < 0) { dur.textContent = '終了が開始より前になっています'; dur.classList.add('bad'); return; }
+    dur.textContent = '差：' + fmtMin(m);
+  }
+
+  /** フォームから開始・終了の時刻を読む（片方だけのときは null） */
+  function timesFromForm() {
+    const f = $('#form-edit');
+    const main = fromLocalInput(f.main.value);
+    const partner = $('#te-partner-block').hidden ? null : fromLocalInput(f.partner.value);
+    let kind;
+    if (state.editMode === 'new') kind = f.addType.value === 'end' ? 'end' : 'start';
+    else kind = state.editing ? state.editing.kind : 'point';
+    if (kind === 'end') return { main: main, partner: partner, start: partner, end: main };
+    return { main: main, partner: partner, start: main, end: partner };
   }
 
   /* ================= 振り返り ================= */
@@ -1406,10 +1676,18 @@
     stopAudio();
     try {
       const res = await withLoading('記録を集めています…', () => api('listLogs', { from: r.from, to: r.to }));
+      const inRange = res.logs.filter(l => l.dateKey >= r.from && l.dateKey <= r.to); // 期間後に終わった「終了」は時間集計にだけ使う
       const empty = !res.logs.length;
       $('#review-empty').hidden = !empty;
       $('#review-body').hidden = empty;
-      if (!empty) { renderStats(res.logs, r); renderCharts(res.logs, r); loadFunBest(r); }
+      if (!empty) {
+        const byDay = minutesByDay(res.logs, dayStartMs(r.from), Math.min(Date.now(), dayStartMs(r.to) + 86400000));
+        const counted = inRange.filter(l => l.kind !== 'end'); // 開始と終了で二重に数えない
+        renderStats(counted, r, byDay);
+        renderTimeCharts(byDay, r);
+        renderCharts(counted, r);
+        loadFunBest(r);
+      }
     } catch (e) { toast(e.message, 'err'); }
     loadReports();
   }
@@ -1437,7 +1715,8 @@
     return out;
   }
 
-  function renderStats(logs, r) {
+  function renderStats(logs, r, byDay) {
+    const totalMin = Object.values(sumByCat(byDay || {})).reduce((a, b) => a + b, 0);
     const days = new Set(logs.map(l => l.dateKey)).size;
     const km = Object.values(dayDistances(logs)).reduce((a, b) => a + b, 0);
     const areas = new Set(logs.map(l => l.area).filter(Boolean)).size;
@@ -1449,9 +1728,64 @@
       ['移動距離', km >= 100 ? Math.round(km) : km.toFixed(1), 'km'],
       ['訪れたエリア', areas, 'か所'],
       ['おもしろ発見', fun, '件'],
-      ['写真・声・絵など', media, '個']
+      ['写真・声・絵など', media, '個'],
+      ['開始〜終了の合計', Math.round(totalMin / 6) / 10, '時間'],
+      ['1日あたり', totalMin ? fmtMin(totalMin / r.days) : '0分', '']
     ];
     $('#stats').innerHTML = items.map(i => '<div><dt>' + i[0] + '</dt><dd>' + i[1] + '<small>' + i[2] + '</small></dd></div>').join('');
+  }
+
+  function renderTimeCharts(byDay, r) {
+    const tot = sumByCat(byDay);
+    const cats = Object.keys(tot).sort((a, b) => tot[b] - tot[a]);
+    const sum = cats.reduce((a, c) => a + tot[c], 0);
+    $('#time-trend-panel').hidden = !cats.length;
+    $('#time-use-wrap').hidden = !cats.length;
+    if (!cats.length) {
+      $('#time-use-note').textContent = '⏱ この期間は開始・終了がそろった記録がありません。記録タブの「⏱ 開始・終了」で記録できます。';
+      return;
+    }
+    $('#time-use-note').textContent = '合計 ' + fmtMin(sum) + '（1日平均 ' + fmtMin(sum / r.days) + '）';
+    if (typeof Chart === 'undefined') return;
+    const ink = cssVar('--ink'), line = cssVar('--line');
+    $('#time-use-wrap').style.height = Math.max(180, cats.length * 34 + 40) + 'px';
+    mkChart('ch-time', {
+      type: 'bar',
+      data: { labels: cats.map(c => catEmoji(c) + ' ' + c), datasets: [{ label: '時間', data: cats.map(c => Math.round(tot[c] / 6) / 10), backgroundColor: cats.map(catColor), borderRadius: 4 }] },
+      options: {
+        indexAxis: 'y', maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => fmtMin(tot[cats[c.dataIndex]]) + '（1日平均 ' + fmtMin(tot[cats[c.dataIndex]] / r.days) + '・' + Math.round(tot[cats[c.dataIndex]] / sum * 100) + '%）' } } },
+        scales: { x: { beginAtZero: true, grid: { color: line }, title: { display: true, text: '時間' } }, y: { grid: { display: false }, ticks: { color: ink } } }
+      }
+    });
+    const mode = bucketMode(r.days);
+    const keys = [];
+    for (let d = parseYmd(r.from); ymd(d) <= r.to; d = addDays(d, 1)) {
+      const k = bucketKey(ymd(d), mode);
+      if (keys[keys.length - 1] !== k) keys.push(k);
+    }
+    const top = cats.slice(0, 6);
+    const agg = {};
+    Object.keys(byDay).forEach(d => {
+      const k = bucketKey(d, mode);
+      Object.keys(byDay[d]).forEach(c => {
+        const name = top.indexOf(c) >= 0 ? c : 'その他';
+        (agg[k] = agg[k] || {})[name] = (agg[k][name] || 0) + byDay[d][c];
+      });
+    });
+    const series = top.concat(cats.length > 6 ? ['その他'] : []);
+    mkChart('ch-time-trend', {
+      type: 'bar',
+      data: {
+        labels: keys.map(k => bucketLabel(k, mode)),
+        datasets: series.map(c => ({ label: c === 'その他' ? 'その他' : catEmoji(c) + c, data: keys.map(k => Math.round(((agg[k] || {})[c] || 0) / 6) / 10), backgroundColor: c === 'その他' ? cssVar('--line') : catColor(c), stack: 't' }))
+      },
+      options: {
+        maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { labels: { color: ink, boxWidth: 12 } }, tooltip: { callbacks: { label: c => c.dataset.label + '：' + fmtMin(c.parsed.y * 60) } } },
+        scales: { x: { stacked: true, grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, autoSkipPadding: 10 } }, y: { stacked: true, beginAtZero: true, grid: { color: line }, title: { display: true, text: '時間' } } }
+      }
+    });
   }
 
   function bucketMode(days) { return days <= 30 ? 'day' : days <= 91 ? 'week' : 'month'; }
@@ -1589,6 +1923,7 @@
       '<p class="meta">' + esc(rep.periodLabel) + '｜' + esc(rep.rangeStart) + ' 〜 ' + esc(rep.rangeEnd) + '</p>' +
       '<p>' + esc(rep.summary) + '</p>' +
       (hl ? '<ul>' + hl + '</ul>' : '') +
+      (rep.timeUse ? '<div class="part"><b>時間の使い方</b>' + esc(rep.timeUse) + '</div>' : '') +
       (rep.funBest ? '<div class="part"><b>おもしろ発見</b>' + esc(rep.funBest) + '</div>' : '') +
       (rep.changes ? '<div class="part"><b>変わってきたこと</b>' + esc(rep.changes) + '</div>' : '') +
       (rep.growth ? '<div class="part"><b>続いていること</b>' + esc(rep.growth) + '</div>' : '') +
@@ -1694,7 +2029,11 @@
     try {
       while (q.length) {
         try {
-          const r = await api('addLog', { log: q[0] });
+          const item = Object.assign({}, q[0]);
+          const action = item._action || 'addLog';
+          delete item._action;
+          const r = await api(action, { log: item });
+          if (r.open) { state.open = r.open; renderOpen(); }
           q.shift(); sent++;
           lsSet(LS.queue, JSON.stringify(q));
           if (r.log.mediaCount) api('enrichLog', { logId: r.log.logId }).catch(() => { });
@@ -1745,21 +2084,63 @@
       if (l) openEdit(l);
     });
 
+    // 時刻の微調整ボタン
+    $$('.te-quick').forEach(q => q.addEventListener('click', ev => {
+      const b = ev.target.closest('button[data-d]');
+      if (!b) return;
+      const input = $('#form-edit')[q.dataset.target];
+      let d;
+      if (b.dataset.d === 'now') d = new Date();
+      else d = new Date((fromLocalInput(input.value) || new Date()).getTime() + Number(b.dataset.d) * 60000);
+      input.value = toLocalInput(d);
+      syncTimeEdit();
+    }));
+    ['main', 'partner'].forEach(n => $('#form-edit')[n].addEventListener('input', syncTimeEdit));
+    $('#form-edit').addType.addEventListener('change', syncTimeEdit);
+
     $('#form-edit').addEventListener('submit', async ev => {
       ev.preventDefault();
       const f = ev.target, l = state.editing;
+      const tm = timesFromForm();
+      if (!tm.main) { toast('時刻を入れてください', 'err'); return; }
+      if (!$('#te-partner-block').hidden && !tm.partner) { toast('もう一方の時刻も入れてください', 'err'); return; }
+      if (tm.start && tm.end && tm.end < tm.start) { toast('終了は開始より後にしてください', 'err'); return; }
+      if (tm.main.getTime() > Date.now() + 60000 || (tm.partner && tm.partner.getTime() > Date.now() + 60000)) { toast('未来の時刻にはできません', 'err'); return; }
+      const common = { category: f.category.value, placeName: f.placeName.value.trim(), note: f.note.value.trim(), fun: state.editFun };
       try {
-        const r = await withLoading('保存しています…', () => api('updateLog', { logId: l.logId, fields: { category: f.category.value, placeName: f.placeName.value.trim(), note: f.note.value.trim(), fun: state.editFun } }));
+        if (state.editMode === 'new') {
+          const t = f.addType.value;
+          let r;
+          if (t === 'both') {
+            r = await withLoading('追加しています…', () => api('addEventPair', { log: common, start: timeObj(tm.start), end: timeObj(tm.end) }));
+            toast(catEmoji(common.category) + ' ' + common.category + ' ' + fmtTime(tm.start.toISOString()) + '〜' + fmtTime(tm.end.toISOString()) + '（' + fmtMin((tm.end - tm.start) / 60000) + '）を追加しました');
+          } else {
+            const o = timeObj(tm.main);
+            r = await withLoading('追加しています…', () => api('addLog', { log: Object.assign({}, common, { kind: t, timestamp: o.iso, dateKey: o.dateKey, hour: o.hour }) }));
+            toast(common.category + 'の' + (t === 'start' ? '開始' : '終了') + 'を追加しました' + (t === 'end' && r.log.pairAt ? '（' + fmtMin(r.log.durationMin) + '）' : ''));
+          }
+          if (r.open) { state.open = r.open; renderOpen(); }
+          closeModal('modal-edit');
+          refreshLists();
+          return;
+        }
+        const fields = common;
+        if (toLocalInput(new Date(l.timestamp)) !== f.main.value) fields.start = timeObj(tm.main);
+        if (tm.partner && l.pairAt && toLocalInput(new Date(l.pairAt)) !== f.partner.value) fields.partner = timeObj(tm.partner);
+        const r = await withLoading('保存しています…', () => api('updateLog', { logId: l.logId, fields: fields }));
         closeModal('modal-edit');
-        toast('記録を直しました');
-        updateLogEverywhere(r.log);
+        const endLog = r.log.kind === 'end' ? r.log : r.partner;
+        toast('直しました' + (endLog && endLog.pairAt ? '（差：' + fmtMin(endLog.durationMin) + '）' : ''));
+        if (r.open) { state.open = r.open; renderOpen(); }
+        if (fields.start || fields.partner || fields.category !== l.category) refreshLists(); else updateLogEverywhere(r.log);
       } catch (e) { toast(e.message, 'err'); }
     });
     $('#btn-edit-delete').addEventListener('click', async () => {
       const l = state.editing;
       if (!confirm(fmtTime(l.timestamp) + '「' + l.category + '」の記録を消しますか？添付した写真や声もゴミ箱に移ります。')) return;
       try {
-        await withLoading('消しています…', () => api('deleteLog', { logId: l.logId }));
+        const r = await withLoading('消しています…', () => api('deleteLog', { logId: l.logId }));
+        if (r.open) { state.open = r.open; renderOpen(); }
         closeModal('modal-edit');
         toast('記録を消しました');
         refreshLists();
@@ -1803,10 +2184,12 @@
   /* ================= 使い方ガイド ================= */
   const GUIDE = [
     { big: '👣', h: 'あしあと帳へようこそ', p: 'どこで何をしたかを、ボタンひとつで残していくノートです。日記を書く時間がなくても、あしあとは自然にたまっていきます。' },
-    { big: '👆', h: '記録はワンタップ', p: '「記録」タブで、やったことのボタンを押すだけ。場所と時刻は自動で入ります。ひとこと（🗣で話して入力）・気分は、つけたいときだけ。' },
+    { big: '⏱', h: '開始と終了を記録', p: '「⏱ 開始・終了」のまま、趣味・スマホ・睡眠などのボタンを押すと「開始」の時刻を記録。もう一度押すと「終了」の時刻を記録し、その差（何分使ったか）を自動で計算して残します。テレビとスマホのように同時に開始していても大丈夫です。' },
+    { big: '✎', h: '時刻はあとから簡単に直せる', p: '一覧の「時刻を直す」や今日の帯グラフから、−15分・＋5分・いま などのボタンで開始・終了それぞれの時刻を直せます。差は自動で計算し直します。押し忘れたら「＋ あとから追加」で開始・終了を入れられます。' },
+    { big: '👆', h: 'その場で記録も', p: '「📍 その場で記録」に切り替えると、時間を計らずに「いま、ここで何をしたか」だけ残せます。ひとこと（🗣で話して入力）・気分は、つけたいときだけ。' },
     { big: '🤩', h: 'おもしろいものを見つけたら', p: '📷写真 🎥動画 🎙声メモ ✏️絵 🔗URL で添付してから、やったことのボタン（または「おもしろ発見」）を押します。AIがひとことを添え、声は文字にしてくれます。ほかのアプリの「共有」からURLを送ることもできます。' },
     { big: '🎁', h: 'あとで楽しむ仕掛け', p: '「おもしろ箱」でコレクションを眺めたり、ガチャで昔の発見を引いたり。タイムカプセルに入れた記録は、決めた日まで開けられません。記録タブには「1年前の今日」なども出てきます。' },
-    { big: '📈', h: '期間を切り替えて振り返る', p: '「振り返り」タブで1週間から3年まで。グラフ、おもしろベスト、AIのまとめと音声ナレーションで振り返れます。' },
+    { big: '📈', h: '何に何時間？を振り返る', p: '「振り返り」タブで1週間から3年まで。何に何時間使ったか、その移り変わり、おもしろベスト、AIのまとめと音声ナレーションで振り返れます。' },
     { big: '🌏', h: '空から旅をたどる', p: '位置データを Google Earth Studio 用に書き出せます。おもしろ発見のあった場所をめぐる、3D空撮風の振り返り動画が作れます。' },
     { big: '📲', h: 'ホーム画面に置くと便利', p: 'ブラウザのメニューから「ホーム画面に追加」すると、アプリのようにすぐ開けます。電波がない場所での記録も、つながったときに自動で送られます（動画を除く）。' }
   ];
