@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2E6B5E">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="あしあと帳">
+<title>あしあと帳</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=Zen+Maru+Gothic:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<script src="config.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+
+<!-- ============ 認証 ============ -->
+<div id="view-auth" class="view" hidden>
+  <div class="auth-wrap">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 64 64" aria-hidden="true">
+        <ellipse cx="22" cy="40" rx="8" ry="12" transform="rotate(-12 22 40)"/>
+        <circle cx="15" cy="23" r="3"/><circle cx="21" cy="20" r="3"/><circle cx="27" cy="21" r="3"/>
+        <ellipse cx="43" cy="28" rx="8" ry="12" transform="rotate(12 43 28)"/>
+        <circle cx="37" cy="11" r="3"/><circle cx="43" cy="8.5" r="3"/><circle cx="49" cy="10" r="3"/>
+      </svg>
+      <h1>あしあと帳</h1>
+      <p>どこで何をしたか、ワンタップで残す。<br>1週間後も、3年後も、ゆっくり振り返れる。</p>
+    </div>
+
+    <div class="seg" role="tablist">
+      <button type="button" class="seg-btn" data-auth="login" role="tab">ログイン</button>
+      <button type="button" class="seg-btn" data-auth="register" role="tab">はじめて登録</button>
+      <button type="button" class="seg-btn" data-auth="reset" role="tab">パスワードを忘れた</button>
+    </div>
+
+    <form id="form-login" class="card form" data-auth-form="login" autocomplete="on">
+      <label>メールアドレス<input type="email" name="email" required autocomplete="email" inputmode="email"></label>
+      <label>パスワード
+        <span class="pw-wrap"><input type="password" name="password" required autocomplete="current-password"><button type="button" class="eye" aria-label="パスワードを表示"></button></span>
+      </label>
+      <p class="form-msg" role="status"></p>
+      <button class="btn btn-primary" type="submit">ログイン</button>
+    </form>
+
+    <form id="form-register" class="card form" data-auth-form="register" hidden>
+      <label>ニックネーム<input type="text" name="nickname" maxlength="20" placeholder="例：ケン" autocomplete="nickname"></label>
+      <label>メールアドレス<input type="email" name="email" required autocomplete="email" inputmode="email"></label>
+      <p class="muted small">登録すると、仮パスワードをこのアドレスにお送りします。最初のログインでご自身のパスワードに変更してください。</p>
+      <p class="form-msg" role="status"></p>
+      <button class="btn btn-primary" type="submit">登録して仮パスワードを受け取る</button>
+    </form>
+
+    <form id="form-reset" class="card form" data-auth-form="reset" hidden>
+      <label>登録したメールアドレス<input type="email" name="email" required autocomplete="email" inputmode="email"></label>
+      <p class="muted small">新しい仮パスワードをメールでお送りします。</p>
+      <p class="form-msg" role="status"></p>
+      <button class="btn btn-primary" type="submit">仮パスワードを再発行する</button>
+    </form>
+
+    <button type="button" class="link-btn" data-open-conn>接続設定（GAS URL）</button>
+    <footer class="ver"><span class="ver-text"></span></footer>
+  </div>
+</div>
+
+<!-- ============ パスワード強制変更 ============ -->
+<div id="view-change" class="view" hidden>
+  <div class="auth-wrap">
+    <div class="brand compact">
+      <h1>パスワードを決めましょう</h1>
+      <p>仮パスワードでログインしました。ご自身だけのパスワードに変更すると使い始められます。</p>
+    </div>
+    <form id="form-change-forced" class="card form">
+      <label>仮パスワード（メールに記載）
+        <span class="pw-wrap"><input type="password" name="current" required autocomplete="current-password"><button type="button" class="eye" aria-label="パスワードを表示"></button></span>
+      </label>
+      <label>新しいパスワード
+        <span class="pw-wrap"><input type="password" name="next" required minlength="8" autocomplete="new-password"><button type="button" class="eye" aria-label="パスワードを表示"></button></span>
+      </label>
+      <label>新しいパスワード（確認）
+        <span class="pw-wrap"><input type="password" name="confirm" required minlength="8" autocomplete="new-password"><button type="button" class="eye" aria-label="パスワードを表示"></button></span>
+      </label>
+      <p class="muted small">8文字以上で、英字と数字を両方含めてください。</p>
+      <p class="form-msg" role="status"></p>
+      <button class="btn btn-primary" type="submit">パスワードを変更して始める</button>
+    </form>
+    <button type="button" class="link-btn" data-logout>別のアカウントでログインする</button>
+    <footer class="ver"><span class="ver-text"></span></footer>
+  </div>
+</div>
+
+<!-- ============ アプリ本体 ============ -->
+<div id="view-app" class="view" hidden>
+  <header class="topbar">
+    <div class="tb-title">あしあと帳</div>
+    <button type="button" class="icon-btn" id="btn-help" aria-label="使い方ガイド">?</button>
+  </header>
+
+  <main class="main">
+    <!-- 記録 -->
+    <section id="tab-record" class="tab" hidden>
+      <div class="hello">
+        <h2 id="hello-text"></h2>
+        <p id="today-text" class="muted"></p>
+      </div>
+
+      <button type="button" class="capsule-banner" id="capsule-banner" hidden></button>
+      <div class="memories" id="memories" hidden></div>
+
+      <div class="loc-card" id="loc-card">
+        <span class="loc-pin" aria-hidden="true"></span>
+        <div class="loc-body">
+          <div id="loc-place" class="loc-place">現在地を取得しています…</div>
+          <div id="loc-sub" class="muted small"></div>
+        </div>
+        <button type="button" class="icon-btn ghost" id="btn-relocate" aria-label="現在地を取り直す">↻</button>
+      </div>
+
+      <div class="fun-bar">
+        <p class="fun-bar-h">おもしろいものを見つけたら</p>
+        <div class="fun-btns" role="group" aria-label="おもしろを添付">
+          <button type="button" data-add="photo"><span class="em" aria-hidden="true">📷</span>写真</button>
+          <button type="button" data-add="video"><span class="em" aria-hidden="true">🎥</span>動画</button>
+          <button type="button" data-add="audio"><span class="em" aria-hidden="true">🎙</span>声メモ</button>
+          <button type="button" data-add="drawing"><span class="em" aria-hidden="true">✏️</span>絵</button>
+          <button type="button" data-add="url"><span class="em" aria-hidden="true">🔗</span>URL</button>
+        </div>
+        <ul class="tray" id="tray" hidden></ul>
+        <input type="file" id="in-photo" accept="image/*" multiple hidden>
+        <input type="file" id="in-video" accept="video/*" hidden>
+      </div>
+
+      <details class="extras" id="extras">
+        <summary>ひとこと・おもしろ度・気分・タイムカプセル</summary>
+        <div class="extras-body">
+          <div class="note-row">
+            <textarea id="rec-note" rows="3" maxlength="500" placeholder="例：川沿いを歩いたら金木犀が香っていた"></textarea>
+            <button type="button" class="icon-btn" id="btn-mic" aria-label="話して入力">🗣</button>
+          </div>
+          <p class="dict-live small" id="dict-live" hidden></p>
+          <div class="field-row"><span class="field-label">おもしろ度</span><div class="stars" id="rec-stars"></div></div>
+          <div class="chip-group" id="mood-chips" aria-label="気分"></div>
+          <div class="chip-group" id="with-chips" aria-label="だれと"></div>
+          <label class="field-row"><span class="field-label">タイムカプセル</span>
+            <select id="rec-capsule" class="select">
+              <option value="">しない</option>
+              <option value="7">1週間後に開く</option>
+              <option value="30">1か月後に開く</option>
+              <option value="182">半年後に開く</option>
+              <option value="365">1年後に開く</option>
+              <option value="1095">3年後に開く</option>
+            </select>
+          </label>
+        </div>
+      </details>
+
+      <p class="hint" id="rec-hint">やったことをタップすると、いまの場所で記録されます</p>
+      <div class="cat-grid" id="cat-grid"></div>
+
+      <h3 class="sec-h">今日のあしあと</h3>
+      <ol class="trail" id="today-list"></ol>
+    </section>
+
+    <!-- 履歴 -->
+    <section id="tab-history" class="tab" hidden>
+      <h2 class="page-h">これまでのあしあと</h2>
+      <div id="history-list"></div>
+      <button type="button" class="btn btn-ghost wide" id="btn-history-more">さらに前の30日を見る</button>
+    </section>
+
+    <!-- おもしろ箱 -->
+    <section id="tab-fun" class="tab" hidden>
+      <div class="fun-head">
+        <h2 class="page-h">おもしろ箱</h2>
+        <button type="button" class="btn btn-trail" id="btn-gacha">🎲 ガチャを回す</button>
+      </div>
+      <p class="muted small" id="fun-count"></p>
+      <div class="filter-chips" id="fun-filters" role="tablist"></div>
+      <div class="fun-grid" id="fun-grid"></div>
+      <button type="button" class="btn btn-ghost wide" id="btn-fun-more" hidden>もっと見る</button>
+    </section>
+
+    <!-- 振り返り -->
+    <section id="tab-review" class="tab" hidden>
+      <h2 class="page-h">振り返り</h2>
+      <div class="period-tabs" id="period-tabs" role="tablist"></div>
+      <p id="range-text" class="muted small"></p>
+
+      <div id="review-empty" class="empty" hidden>
+        この期間の記録はまだありません。<br>「記録」タブで最初のあしあとを残しましょう。
+      </div>
+
+      <div id="review-body">
+        <dl class="stats" id="stats"></dl>
+
+        <div class="panel" id="fun-best-panel" hidden>
+          <h3>この期間のおもしろベスト</h3>
+          <div class="fun-grid small-grid" id="fun-best"></div>
+        </div>
+
+        <div class="panel">
+          <h3>何をしていたか</h3>
+          <div class="chart-wrap"><canvas id="ch-cat"></canvas></div>
+        </div>
+        <div class="panel">
+          <h3>動いている時間帯</h3>
+          <div class="chart-wrap"><canvas id="ch-hour"></canvas></div>
+        </div>
+        <div class="panel">
+          <h3>記録数と移動距離の移り変わり</h3>
+          <div class="chart-wrap"><canvas id="ch-trend"></canvas></div>
+        </div>
+        <div class="panel">
+          <h3>よく行くエリア</h3>
+          <div class="chart-wrap"><canvas id="ch-area"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel ai-panel">
+        <h3>AIの振り返り</h3>
+        <p class="muted small">この期間の記録をGeminiが読んで、変化やよかったことをまとめます。音声でも聴けます。</p>
+        <div class="row-gap">
+          <button type="button" class="btn btn-primary" id="btn-analyze">この期間を振り返ってもらう</button>
+          <select id="report-select" class="select" aria-label="これまでの振り返り" hidden></select>
+        </div>
+        <article id="report" class="report" hidden></article>
+      </div>
+
+      <div class="panel earth-panel">
+        <h3>空から振り返る（Google Earth Studio）</h3>
+        <p class="muted small">この期間の滞在地と移動ルートを、Earth Studio に読み込めるKMLと、カメラ位置の表（JSON）で書き出します。</p>
+        <button type="button" class="btn btn-trail" id="btn-earth">Earth Studio 用データを書き出す</button>
+        <div id="earth-result" hidden></div>
+        <details class="howto">
+          <summary>動画にするまでの流れ</summary>
+          <ol class="steps">
+            <li>書き出したKMLとJSONをパソコンに保存します。</li>
+            <li>Chromeで Google Earth Studio を開き、空のプロジェクトを作ります。</li>
+            <li>KMLを読み込むと、滞在地がトラックポイント（目印）として地図に並びます。</li>
+            <li>JSONの順番どおりに、各地点へカメラのキーフレームを置いていきます（時間・向き・傾き・距離が書いてあります）。</li>
+            <li>レンダリングして書き出せば、振り返り動画の完成です。</li>
+          </ol>
+        </details>
+      </div>
+    </section>
+
+    <!-- 設定 -->
+    <section id="tab-settings" class="tab" hidden>
+      <h2 class="page-h">設定</h2>
+
+      <form class="panel form" id="form-profile">
+        <h3>プロフィール</h3>
+        <p class="muted small" id="set-email"></p>
+        <label>ニックネーム<input type="text" name="nickname" maxlength="20" required></label>
+        <button class="btn btn-ghost" type="submit">ニックネームを保存</button>
+      </form>
+
+      <form class="panel form" id="form-change">
+        <h3>パスワードの変更</h3>
+        <label>現在のパスワード
+          <span class="pw-wrap"><input type="password" name="current" required autocomplete="current-password"><button type="button" class="eye" aria-label="パスワードを表示"></button></span>
+        </label>
+        <label>新しいパスワード
+          <span class="pw-wrap"><input type="password" name="next" required minlength="8" autocomplete="new-password"><button type="button" class="eye" aria-label="パスワードを表示"></button></span>
+        </label>
+        <label>新しいパスワード（確認）
+          <span class="pw-wrap"><input type="password" name="confirm" required minlength="8" autocomplete="new-password"><button type="button" class="eye" aria-label="パスワードを表示"></button></span>
+        </label>
+        <p class="form-msg" role="status"></p>
+        <button class="btn btn-ghost" type="submit">パスワードを変更</button>
+      </form>
+
+      <div class="panel">
+        <h3>自分のボタンを追加</h3>
+        <p class="muted small">よくやることを記録ボタンに足せます。</p>
+        <form class="add-cat" id="form-addcat">
+          <input type="text" name="emoji" maxlength="4" placeholder="🎣" aria-label="絵文字" class="emoji-in">
+          <input type="text" name="label" maxlength="10" placeholder="釣り" aria-label="名前" required>
+          <button class="btn btn-ghost" type="submit">追加</button>
+        </form>
+        <ul class="custom-cats" id="custom-cats"></ul>
+      </div>
+
+      <div class="panel">
+        <h3>送信待ちの記録</h3>
+        <p class="muted small" id="queue-text"></p>
+        <button type="button" class="btn btn-ghost" id="btn-flush">いま送る</button>
+      </div>
+
+      <div class="panel">
+        <h3>このアプリについて</h3>
+        <div class="row-gap">
+          <button type="button" class="btn btn-ghost" id="btn-guide2">使い方ガイド</button>
+          <button type="button" class="btn btn-ghost" data-open-conn>接続設定（GAS URL）</button>
+        </div>
+        <p class="muted small" id="set-gas"></p>
+      </div>
+
+      <button type="button" class="btn btn-danger wide" data-logout>ログアウト</button>
+    </section>
+
+    <footer class="ver"><span class="ver-text"></span></footer>
+  </main>
+
+  <nav class="bottom-nav" aria-label="メニュー">
+    <button type="button" data-tab="record">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v8M8 12h8"/></svg><span>記録</span>
+    </button>
+    <button type="button" data-tab="history">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h12M6 12h12M6 19h8"/><circle cx="3" cy="5" r=".6"/><circle cx="3" cy="12" r=".6"/><circle cx="3" cy="19" r=".6"/></svg><span>履歴</span>
+    </button>
+    <button type="button" data-tab="fun">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9h18v11H3zM3 9l2-5h14l2 5M10 13h4"/></svg><span>おもしろ箱</span>
+    </button>
+    <button type="button" data-tab="review">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span>振り返り</span>
+    </button>
+    <button type="button" data-tab="settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg><span>設定</span>
+    </button>
+  </nav>
+</div>
+
+<!-- ============ モーダル ============ -->
+<div class="modal" id="modal-guide" hidden role="dialog" aria-modal="true" aria-labelledby="guide-title">
+  <div class="modal-card">
+    <div id="guide-slide"></div>
+    <div class="guide-dots" id="guide-dots"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="guide-prev">戻る</button>
+      <button type="button" class="btn btn-primary" id="guide-next">次へ</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal-edit" hidden role="dialog" aria-modal="true" aria-labelledby="edit-title">
+  <form class="modal-card form" id="form-edit">
+    <h3 id="edit-title">記録を直す</h3>
+    <p class="muted small" id="edit-when"></p>
+    <label>やったこと<select name="category" class="select"></select></label>
+    <label>場所の名前<input type="text" name="placeName" maxlength="80"></label>
+    <div class="field-row"><span class="field-label">おもしろ度</span><div class="stars" id="edit-stars"></div></div>
+    <label>ひとこと<textarea name="note" rows="3" maxlength="500"></textarea></label>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-danger-ghost" id="btn-edit-delete">この記録を消す</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-ghost" data-close>やめる</button>
+      <button type="submit" class="btn btn-primary">保存</button>
+    </div>
+  </form>
+</div>
+
+<div class="modal" id="modal-photo" hidden role="dialog" aria-modal="true" aria-label="写真">
+  <div class="modal-card photo-card">
+    <img id="photo-full" alt="記録の写真">
+    <div class="modal-actions"><button type="button" class="btn btn-ghost" data-close>閉じる</button></div>
+  </div>
+</div>
+
+<div class="modal" id="modal-conn" hidden role="dialog" aria-modal="true" aria-labelledby="conn-title">
+  <form class="modal-card form" id="form-conn">
+    <h3 id="conn-title">接続設定</h3>
+    <p class="muted small">GASでデプロイしたウェブアプリのURL（…/exec）を入れてください。空にすると config.js の値に戻ります。</p>
+    <label>GAS ウェブアプリURL<input type="url" name="url" placeholder="https://script.google.com/macros/s/…/exec"></label>
+    <p class="form-msg" role="status"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="btn-conn-test">接続を確かめる</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-ghost" data-close>閉じる</button>
+      <button type="submit" class="btn btn-primary">保存</button>
+    </div>
+  </form>
+</div>
+
+<div class="modal" id="modal-detail" hidden role="dialog" aria-modal="true" aria-labelledby="detail-title">
+  <div class="modal-card">
+    <div id="detail-body"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="btn-detail-edit">直す</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-primary" data-close>閉じる</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal-voice" hidden role="dialog" aria-modal="true" aria-labelledby="voice-title">
+  <div class="modal-card voice-card">
+    <h3 id="voice-title">声でメモする</h3>
+    <p class="muted small">ボタンを押して話してください。もう一度押すと止まります（最長5分）。</p>
+    <button type="button" class="rec-btn" id="btn-rec" aria-label="録音をはじめる"><span></span></button>
+    <p class="rec-time" id="rec-time">0:00</p>
+    <audio id="rec-preview" controls hidden></audio>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" data-close>やめる</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-primary" id="btn-voice-attach" disabled>この声を添付</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal-draw" hidden role="dialog" aria-modal="true" aria-labelledby="draw-title">
+  <div class="modal-card draw-card">
+    <h3 id="draw-title">絵でのこす</h3>
+    <div class="draw-tools">
+      <div class="swatches" id="draw-colors"></div>
+      <div class="sizes" id="draw-sizes"></div>
+    </div>
+    <div class="canvas-box"><canvas id="draw-canvas"></canvas></div>
+    <div class="draw-tools">
+      <button type="button" class="btn btn-ghost small-btn" id="draw-eraser">消しゴム</button>
+      <button type="button" class="btn btn-ghost small-btn" id="draw-undo">ひとつ戻す</button>
+      <button type="button" class="btn btn-ghost small-btn" id="draw-clear">ぜんぶ消す</button>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" data-close>やめる</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-primary" id="btn-draw-attach">この絵を添付</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal-url" hidden role="dialog" aria-modal="true" aria-labelledby="url-title">
+  <form class="modal-card form" id="form-url">
+    <h3 id="url-title">関連ページのURL</h3>
+    <label>URL
+      <span class="url-row"><input type="text" name="url" placeholder="https://…" required inputmode="url" autocapitalize="off" autocomplete="url"><button type="button" class="btn btn-ghost small-btn" id="btn-paste">貼り付け</button></span>
+    </label>
+    <label>メモ（任意）<input type="text" name="title" maxlength="100" placeholder="例：さっきの看板のお店"></label>
+    <p class="muted small">ページの題名や画像は、記録したあと自動で取り込みます。</p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" data-close>やめる</button>
+      <span class="spacer"></span>
+      <button type="submit" class="btn btn-primary">添付する</button>
+    </div>
+  </form>
+</div>
+
+<div class="modal" id="modal-reveal" hidden role="dialog" aria-modal="true" aria-label="おもしろガチャ">
+  <div class="modal-card reveal-card">
+    <div id="reveal-stage"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" data-close>閉じる</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-trail" id="btn-reveal-again" hidden>もう一回</button>
+      <button type="button" class="btn btn-primary" id="btn-reveal-open" hidden>くわしく見る</button>
+    </div>
+  </div>
+</div>
+
+<div class="loading" id="loading" hidden><div class="loading-card"><span class="spinner" aria-hidden="true"></span><p id="loading-text">読み込み中…</p></div></div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
