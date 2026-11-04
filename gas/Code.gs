@@ -4,13 +4,14 @@
  * Gemini TTS / Google Earth Studio 用データ書き出し / タイムカプセル・あの日・ガチャ
  * 時間記録：「開始」「終了」をそれぞれ時刻として記録し、あとで差分（所要時間）を計算して保存
  * v1.4.0：各記録へのメモ（追記・編集・削除）／指定した会員にだけ公開（公開相手の管理・閲覧）
+ * v1.5.0：公開はデフォルト非公開（private 列が FALSE のものだけ公開）／LINEなどで送れる共有リンク（ログイン不要で見られる）
  *
  * 初回のみ：エディタで setup() を実行 → スクリプトプロパティに GEMINI_API_KEY を設定 → ウェブアプリとしてデプロイ
  * Gemini のモデルはスクリプトプロパティ GEMINI_MODEL / GEMINI_TTS_MODEL / GEMINI_TTS_VOICE で指定（setup() が初期値を入れます）
  * ※コードを変更したら「デプロイを管理 → 編集 → 新しいバージョン」で再デプロイしないと反映されません
  */
 
-const APP_VERSION = 'v1.4.0';
+const APP_VERSION = 'v1.5.0';
 const MAX_SPAN_MS = 7 * 86400000; // 1つの時間記録の最長（7日）
 const MEDIA_TYPES = ['photo', 'video', 'audio', 'drawing', 'url'];
 const MAX_MEDIA = 6;
@@ -20,7 +21,8 @@ const MAX_SHARES = 50;      // 1人が公開できる相手の上限
 const GEO_LEVELS = ['exact', 'area', 'none']; // 公開相手への場所の見せ方：地図で正確に／市区町村まで／見せない
 const SHARE_MAX_DAYS = 62;  // 公開相手が一度に読める期間（日）
 
-const SH = { USERS: 'Users', LOGS: 'Logs', REPORTS: 'Reports', CONFIG: 'Config', MEMOS: 'Memos', SHARES: 'Shares' };
+const SH = { USERS: 'Users', LOGS: 'Logs', REPORTS: 'Reports', CONFIG: 'Config', MEMOS: 'Memos', SHARES: 'Shares', LINKS: 'Links' };
+const LINK_DAYS = [1, 7, 30, 0]; // 共有リンクの有効期限（日）。0は無期限
 
 const HEADERS = {
   Users: ['userId', 'email', 'nickname', 'salt', 'passwordHash', 'mustChange', 'status', 'failCount', 'lockUntil', 'onboarded', 'prefs', 'createdAt', 'lastLoginAt'],
@@ -28,7 +30,8 @@ const HEADERS = {
   Reports: ['reportId', 'userId', 'period', 'rangeStart', 'rangeEnd', 'title', 'reportJson', 'script', 'audioFileId', 'createdAt'],
   Config: ['key', 'value', 'note'],
   Memos: ['memoId', 'userId', 'logId', 'text', 'createdAt', 'updatedAt', 'deleted'],
-  Shares: ['shareId', 'ownerId', 'viewerId', 'viewerEmail', 'label', 'group', 'enabled', 'geoLevel', 'createdAt', 'updatedAt', 'lastViewedAt']
+  Shares: ['shareId', 'ownerId', 'viewerId', 'viewerEmail', 'label', 'group', 'enabled', 'geoLevel', 'createdAt', 'updatedAt', 'lastViewedAt'],
+  Links: ['linkId', 'ownerId', 'type', 'target', 'geoLevel', 'title', 'expiresAt', 'createdAt', 'revoked', 'views', 'lastViewedAt']
 };
 
 const DEFAULT_CONFIG = [
@@ -102,7 +105,10 @@ const PUBLIC_API = {
   register: api_register,
   login: api_login,
   resetPassword: api_resetPassword,
-  logout: api_logout
+  logout: api_logout,
+  // v1.5.0 共有リンク（ログイン不要。推測できない長いIDで守る）
+  viewLink: api_viewLink,
+  linkMedia: api_linkMedia
 };
 
 const PRIVATE_API = {
@@ -144,7 +150,12 @@ const PRIVATE_API = {
   // v1.4.0 公開されたあしあと（見る側）
   sharedWithMe: api_sharedWithMe,
   sharedLogs: api_sharedLogs,
-  sharedMedia: api_sharedMedia
+  sharedMedia: api_sharedMedia,
+  // v1.5.0
+  setDayPrivate: api_setDayPrivate,
+  createLink: api_createLink,
+  listLinks: api_listLinks,
+  revokeLink: api_revokeLink
 };
 
 /* =========================================================
@@ -457,7 +468,7 @@ function makeLogObj_(u, l) {
     photoFileId: photoFileId, createdAt: nowIso_(), updatedAt: '', deleted: 'FALSE',
     fun: String(fun), media: fitMediaJson_(media), capsuleUntil: capsuleUntil, capsuleOpenedAt: '', ai: '',
     kind: kind, endAt: '', endDateKey: '', pairId: '', pairAt: '', pairDateKey: '', durationMin: '',
-    private: l.private === true || String(l.private).toUpperCase() === 'TRUE' ? 'TRUE' : 'FALSE'
+    private: l.private === false || String(l.private).toUpperCase() === 'FALSE' ? 'FALSE' : 'TRUE' // 指定がなければ非公開
   };
 }
 
@@ -524,7 +535,7 @@ function api_updateLog(req, u) {
         const p = makeLogObj_(u, {
           category: hit.obj.category, kind: want, timestamp: other.toISOString(), dateKey: f.partner.dateKey, hour: f.partner.hour,
           lat: hit.obj.lat, lng: hit.obj.lng, placeName: hit.obj.placeName, address: hit.obj.address || '-', area: hit.obj.area,
-          private: toBool_(hit.obj.private)
+          private: isPrivate_(hit.obj.private)
         });
         if (p.address === '-') p.address = '';
         p.logId = hit.obj.logId + (want === 'end' ? 'E' : 'S') + Math.floor(Math.random() * 90 + 10);
@@ -702,7 +713,7 @@ function publicLog_(o, opts) {
     durationMin: o.durationMin !== '' && o.durationMin !== undefined ? Number(o.durationMin) : null,
     open: o.kind === 'start' && !o.pairId,
     hasPhoto: media.some(m => m.type === 'photo'),
-    private: toBool_(o.private)
+    private: isPrivate_(o.private)
   };
   // メモは memoMap を渡されたときだけ付ける（付けないときは画面側の既存メモを残す）
   if (opts.memoMap) {
@@ -1845,7 +1856,7 @@ function ownerVisibleRaw_(ownerId, from, to, t) {
   const priv = {};
   t.rows.forEach(row => {
     if (String(row[H.userId]) !== ownerId || toBool_(row[H.deleted])) return;
-    if (H.private !== undefined && toBool_(row[H.private])) { priv[String(row[H.logId])] = true; return; }
+    if (H.private === undefined || isPrivate_(row[H.private])) { priv[String(row[H.logId])] = true; return; }
     rows.push(row);
   });
   const out = [];
@@ -1928,12 +1939,191 @@ function api_sharedMedia(req, u) {
   const t = table_(SH.LOGS);
   const hit = findInTable_(t, req.logId);
   const ng = () => new Error('この記録は見られません。');
-  if (!hit || hit.obj.userId !== ownerId || toBool_(hit.obj.deleted) || toBool_(hit.obj.private) || isSealed_(hit.obj)) throw ng();
+  if (!hit || hit.obj.userId !== ownerId || toBool_(hit.obj.deleted) || isPrivate_(hit.obj.private) || isSealed_(hit.obj)) throw ng();
   if (hit.obj.pairId) {
     const p = findInTable_(t, hit.obj.pairId);
-    if (p && toBool_(p.obj.private)) throw ng();
+    if (p && isPrivate_(p.obj.private)) throw ng();
   }
   return mediaPayload_(hit.obj, { mediaId: req.mediaId, preferPreview: req.preferPreview });
+}
+
+
+/* =========================================================
+ * v1.5.0 1日分をまとめて公開／非公開
+ * ======================================================= */
+function api_setDayPrivate(req, u) {
+  if (!validKey_(req.dateKey)) throw new Error('日付の指定が正しくありません。');
+  const val = req.private === false || String(req.private).toUpperCase() === 'FALSE' ? 'FALSE' : 'TRUE';
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  let n = 0;
+  try {
+    const t = table_(SH.LOGS);
+    const H = colIndex_(t.headers);
+    if (H.private === undefined) throw new Error('Logs シートに private 列がありません。GASエディタで setup() を実行してください。');
+    const ids = {};
+    t.rows.forEach(r => {
+      if (String(r[H.userId]) !== u.obj.userId || toBool_(r[H.deleted]) || String(r[H.dateKey]) !== req.dateKey) return;
+      if (isSealed_(rowToObj_(t.headers, r))) return;
+      ids[String(r[H.logId])] = true;
+      if (r[H.pairId]) ids[String(r[H.pairId])] = true; // 開始・終了はペアでそろえる
+    });
+    t.rows.forEach((r, i) => {
+      if (!ids[String(r[H.logId])] || String(r[H.userId]) !== u.obj.userId) return;
+      if (String(r[H.private]).toUpperCase() === val) return;
+      const o = rowToObj_(t.headers, r);
+      o.private = val;
+      o.updatedAt = nowIso_();
+      updateRow_(t, i, o);
+      n++;
+    });
+  } finally {
+    lock.releaseLock();
+  }
+  return { dateKey: req.dateKey, changed: n, private: val === 'TRUE' };
+}
+
+/* =========================================================
+ * v1.5.0 共有リンク（LINE などで送る）
+ * Links シート：linkId / ownerId / type（log・day）/ target（logId・日付）/ geoLevel / title
+ *              / expiresAt / createdAt / revoked / views / lastViewedAt
+ * リンクを知っている人は、ログインしなくても「その記録」「その日」だけ見られる
+ * ======================================================= */
+function linksTable_() {
+  const t = tableOpt_(SH.LINKS);
+  if (!t) throw new Error('シート「Links」がありません。GASエディタで setup() を実行してください。');
+  return t;
+}
+
+function api_createLink(req, u) {
+  const type = req.type === 'day' ? 'day' : 'log';
+  let target = '', title = '';
+  if (type === 'log') {
+    const hit = findLog_(req.logId, u.obj.userId);
+    if (isSealed_(hit.obj)) throw new Error('封印中のタイムカプセルは送れません。');
+    target = hit.obj.logId;
+    title = hit.obj.dateKey + ' ' + hit.obj.category;
+  } else {
+    if (!validKey_(req.dateKey)) throw new Error('日付の指定が正しくありません。');
+    const n = getUserRawLogs_(u.obj.userId, req.dateKey, req.dateKey).filter(o => o.dateKey === req.dateKey && !isSealed_(o)).length;
+    if (!n) throw new Error('この日には送れる記録がありません。');
+    target = req.dateKey;
+    title = req.dateKey + ' のあしあと（' + n + '件）';
+  }
+  const days = LINK_DAYS.indexOf(Number(req.days)) >= 0 ? Number(req.days) : 7;
+  const now = new Date();
+  const obj = {
+    linkId: Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '').slice(0, 8),
+    ownerId: u.obj.userId, type: type, target: target, geoLevel: geoLevel_(req.geoLevel || 'area'), title: title,
+    expiresAt: days ? new Date(now.getTime() + days * 86400000).toISOString() : '',
+    createdAt: now.toISOString(), revoked: 'FALSE', views: '0', lastViewedAt: ''
+  };
+  linksTable_();
+  appendObj_(SH.LINKS, obj);
+  return { link: publicLink_(obj) };
+}
+
+function publicLink_(o) {
+  const exp = o.expiresAt ? new Date(o.expiresAt).getTime() : 0;
+  return {
+    linkId: o.linkId, type: o.type, target: o.target, geoLevel: geoLevel_(o.geoLevel), title: o.title,
+    expiresAt: o.expiresAt || '', createdAt: o.createdAt, revoked: toBool_(o.revoked),
+    expired: !!exp && exp < Date.now(), views: Number(o.views) || 0, lastViewedAt: o.lastViewedAt || ''
+  };
+}
+
+function api_listLinks(req, u) {
+  const t = tableOpt_(SH.LINKS);
+  if (!t) return { links: [] };
+  const H = colIndex_(t.headers);
+  const list = [];
+  t.rows.forEach(r => { if (String(r[H.ownerId]) === u.obj.userId) list.push(publicLink_(rowToObj_(t.headers, r))); });
+  list.sort((a, b) => a.createdAt < b.createdAt ? 1 : -1);
+  return { links: list.slice(0, 100) };
+}
+
+function api_revokeLink(req, u) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const t = linksTable_();
+    const H = colIndex_(t.headers);
+    for (let i = 0; i < t.rows.length; i++) {
+      if (String(t.rows[i][H.linkId]) === String(req.linkId) && String(t.rows[i][H.ownerId]) === u.obj.userId) {
+        const o = rowToObj_(t.headers, t.rows[i]);
+        o.revoked = 'TRUE';
+        updateRow_(t, i, o);
+        return api_listLinks(req, u);
+      }
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  throw new Error('リンクが見つかりません。');
+}
+
+/** リンクの確認（取り消し・期限切れ・持ち主の停止を弾く） */
+function linkOf_(id) {
+  const ng = () => appErr_('このリンクは見られません（期限が切れたか、取り消されました）。', 'LINK_OFF');
+  if (!/^[0-9a-f]{40}$/.test(String(id || ''))) throw ng();
+  const t = tableOpt_(SH.LINKS);
+  if (!t) throw ng();
+  const H = colIndex_(t.headers);
+  for (let i = 0; i < t.rows.length; i++) {
+    if (String(t.rows[i][H.linkId]) !== String(id)) continue;
+    const o = rowToObj_(t.headers, t.rows[i]);
+    if (toBool_(o.revoked)) throw ng();
+    if (o.expiresAt && new Date(o.expiresAt).getTime() < Date.now()) throw ng();
+    const owner = findUser_('userId', o.ownerId);
+    if (!owner || owner.obj.status !== 'active') throw ng();
+    return { t: t, idx: i, obj: o, owner: owner };
+  }
+  throw ng();
+}
+
+/** リンクで見せる記録（生データ）。log は本人＋ペアの相手、day はその日の全記録（封印中のカプセルは除く） */
+function linkRaw_(L) {
+  const ownerId = L.owner.obj.userId;
+  if (L.obj.type === 'day') {
+    return getUserRawLogs_(ownerId, L.obj.target, L.obj.target).filter(o => !isSealed_(o));
+  }
+  const t = table_(SH.LOGS);
+  const hit = findInTable_(t, L.obj.target);
+  if (!hit || hit.obj.userId !== ownerId || toBool_(hit.obj.deleted) || isSealed_(hit.obj)) throw appErr_('この記録は消されたか、見られなくなりました。', 'LINK_OFF');
+  const out = [hit.obj];
+  if (hit.obj.pairId) {
+    const p = findInTable_(t, hit.obj.pairId);
+    if (p && p.obj.userId === ownerId && !toBool_(p.obj.deleted)) out.push(p.obj);
+  }
+  return sortByTime_(out);
+}
+
+function api_viewLink(req) {
+  const L = linkOf_(req.id);
+  const ownerId = L.owner.obj.userId;
+  const memoMap = memoMap_(ownerId);
+  const logs = linkRaw_(L).map(o => sharedLog_(o, geoLevel_(L.obj.geoLevel), memoMap, true));
+  try {
+    L.obj.views = String((Number(L.obj.views) || 0) + 1);
+    L.obj.lastViewedAt = nowIso_();
+    updateRow_(L.t, L.idx, L.obj);
+  } catch (e) { }
+  const cats = {};
+  (parseJson_(L.owner.obj.prefs, {}).customCats || []).forEach(c => { if (c && c.label) cats[String(c.label)] = String(c.emoji || '📍'); });
+  const main = L.obj.type === 'log' ? logs.filter(l => l.logId === L.obj.target)[0] : null;
+  return {
+    type: L.obj.type, dateKey: L.obj.type === 'day' ? L.obj.target : (main ? main.dateKey : ''),
+    focusId: L.obj.type === 'log' ? L.obj.target : '',
+    owner: { nickname: L.owner.obj.nickname }, geoLevel: geoLevel_(L.obj.geoLevel),
+    expiresAt: L.obj.expiresAt || '', logs: logs, cats: cats
+  };
+}
+
+function api_linkMedia(req) {
+  const L = linkOf_(req.id);
+  const hit = linkRaw_(L).filter(o => o.logId === String(req.logId))[0];
+  if (!hit) throw new Error('この記録は見られません。');
+  return mediaPayload_(hit, { mediaId: req.mediaId, preferPreview: req.preferPreview });
 }
 
 /* =========================================================
@@ -2121,6 +2311,8 @@ function num_(v) { if (v === null || v === undefined || v === '') return null; c
 function round6_(n) { return Math.round(n * 1e6) / 1e6; }
 function clamp_(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function sessionSec_() { return Math.min(21600, Math.max(600, Number(cfg_('sessionHours', '6')) * 3600)); }
+/** 公開してよいのは private 列がはっきり FALSE のものだけ（空欄・TRUE は非公開） */
+function isPrivate_(v) { return String(v === undefined || v === null ? '' : v).toUpperCase() !== 'FALSE'; }
 function parseJson_(s, def) { try { return s ? JSON.parse(s) : def; } catch (e) { return def; } }
 
 /* =========================================================

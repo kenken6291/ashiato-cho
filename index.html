@@ -95,6 +95,20 @@
   </div>
 </div>
 
+<!-- ============ 共有リンクで開いたとき（ログイン不要） ============ -->
+<div id="view-link" class="view" hidden>
+  <header class="topbar"><div class="tb-title">あしあと帳</div></header>
+  <main class="main link-main">
+    <div id="link-body" class="cal-root"></div>
+    <div class="panel link-cta">
+      <h3>あしあと帳とは</h3>
+      <p class="muted small">どこで何をしたか、おもしろい発見をワンタップで残して、あとからカレンダーや地図で振り返れるノートです。</p>
+      <button type="button" class="btn btn-primary" id="btn-link-join">あしあと帳を開く</button>
+    </div>
+    <footer class="ver"><span class="ver-text"></span></footer>
+  </main>
+</div>
+
 <!-- ============ アプリ本体 ============ -->
 <div id="view-app" class="view" hidden>
   <header class="topbar">
@@ -142,7 +156,7 @@
       </div>
 
       <details class="extras" id="extras">
-        <summary>ひとこと・おもしろ度・気分・タイムカプセル・公開<span class="priv-badge" id="rec-priv-badge" hidden>🙈 自分だけ</span></summary>
+        <summary>ひとこと・おもしろ度・気分・タイムカプセル・公開<span class="priv-badge" id="rec-priv-badge" hidden>👁 公開</span></summary>
         <div class="extras-body">
           <div class="note-row">
             <textarea id="rec-note" rows="3" maxlength="500" placeholder="例：川沿いを歩いたら金木犀が香っていた"></textarea>
@@ -162,7 +176,7 @@
               <option value="1095">3年後に開く</option>
             </select>
           </label>
-          <label class="check priv-row"><input type="checkbox" id="rec-private"> 🙈 自分だけ（公開相手に見せない）</label>
+          <label class="check priv-row"><input type="checkbox" id="rec-public"> 👁 公開相手に見せる（オフなら自分だけ）</label>
         </div>
       </details>
 
@@ -320,7 +334,7 @@
 
       <div class="panel share-panel" id="share-panel">
         <h3>あしあとを見せる相手</h3>
-        <p class="muted small">家族や友人など、あしあと帳に登録している会員を指定して、あなたのあしあとを見せられます。相手は「みんな」タブから見るだけで、直したり書き込んだりはできません。「🙈 自分だけ」にした記録と、封印中のタイムカプセルは見せません。</p>
+        <p class="muted small">家族や友人など、あしあと帳に登録している会員を指定して、あなたのあしあとを見せられます。相手は「みんな」タブから見るだけで、直したり書き込んだりはできません。記録は<b>最初は非公開（自分だけ）</b>で、「👁 公開」にした記録だけを見せます。封印中のタイムカプセルは見せません。</p>
         <form class="form share-add" id="form-share-add">
           <label>相手のメールアドレス（あしあと帳に登録しているもの）<input type="email" name="email" required inputmode="email" autocomplete="off" placeholder="example@mail.com"></label>
           <div class="two-col">
@@ -340,7 +354,13 @@
         </form>
         <datalist id="share-groups"><option value="家族"><option value="友人"><option value="親せき"><option value="仕事仲間"></datalist>
         <div id="share-list" class="share-list"></div>
-        <label class="check share-default"><input type="checkbox" id="pref-private-default"> 新しい記録を、最初から「🙈 自分だけ」にする（見せたい記録だけ、あとで公開に切り替える）</label>
+        <label class="check share-default"><input type="checkbox" id="pref-public-default"> 新しい記録を、最初から公開相手に見せる（オフのままなら、記録は自分だけ。見せたいものだけ「👁 公開」に）</label>
+      </div>
+
+      <div class="panel link-panel" id="link-panel">
+        <h3>LINEなどで送ったリンク</h3>
+        <p class="muted small">記録や1日分を「📤 送る」で作ったリンクです。リンクを知っている人はログインなしで見られます。取り消すと、すぐに見られなくなります。</p>
+        <ul class="link-list" id="link-list"></ul>
       </div>
 
       <form class="panel form" id="form-change">
@@ -455,7 +475,7 @@
     <label>場所の名前<input type="text" name="placeName" maxlength="80"></label>
     <div class="field-row"><span class="field-label">おもしろ度</span><div class="stars" id="edit-stars"></div></div>
     <label>ひとこと<textarea name="note" rows="3" maxlength="500"></textarea></label>
-    <label class="check"><input type="checkbox" name="private"> 🙈 自分だけ（公開相手に見せない）</label>
+    <label class="check"><input type="checkbox" name="public"> 👁 公開相手に見せる（オフなら自分だけ）</label>
     <p class="muted small" id="edit-memo-hint" hidden>あとから書き足すメモは、記録をタップした「くわしく見る」画面で追加・編集できます。</p>
     <div class="modal-actions">
       <button type="button" class="btn btn-danger-ghost" id="btn-edit-delete">この記録を消す</button>
@@ -493,6 +513,7 @@
     <div id="detail-body"></div>
     <div class="modal-actions">
       <button type="button" class="btn btn-ghost" id="btn-detail-edit">直す</button>
+      <button type="button" class="btn btn-line" id="btn-detail-send">📤 LINEなどで送る</button>
       <span class="spacer"></span>
       <button type="button" class="btn btn-primary" data-close>閉じる</button>
     </div>
@@ -584,6 +605,50 @@
       <button type="submit" class="btn btn-primary">保存</button>
     </div>
   </form>
+</div>
+
+<div class="modal" id="modal-link" hidden role="dialog" aria-modal="true" aria-labelledby="link-title">
+  <div class="modal-card form">
+    <h3 id="link-title">📤 LINEなどで送る</h3>
+    <p class="muted small" id="link-what"></p>
+    <div id="link-setup">
+      <label id="link-scope-row">送る範囲
+        <select id="link-scope" class="select">
+          <option value="log">この記録だけ</option>
+          <option value="day">この日のあしあと全部</option>
+        </select>
+      </label>
+      <label>場所の見せ方
+        <select id="link-geo" class="select">
+          <option value="area">🏙 市区町村まで</option>
+          <option value="exact">📍 地図で正確に見せる</option>
+          <option value="none">🚫 場所は見せない</option>
+        </select>
+      </label>
+      <label>見られる期間
+        <select id="link-days" class="select">
+          <option value="1">1日</option>
+          <option value="7" selected>1週間</option>
+          <option value="30">1か月</option>
+          <option value="0">期限なし</option>
+        </select>
+      </label>
+      <p class="muted small" id="link-note">リンクを受け取った人は、ログインしなくても見られます（写真・声・メモも含みます。「自分だけ」の記録も、このリンクで送った分は見えます）。「設定 → LINEなどで送ったリンク」からいつでも取り消せます。</p>
+      <button type="button" class="btn btn-primary wide" id="btn-link-make">リンクを作る</button>
+    </div>
+    <div id="link-out" hidden>
+      <label>リンク<input type="text" id="link-url" readonly></label>
+      <div class="link-btns">
+        <a class="btn btn-line" id="btn-line" href="#" target="_blank" rel="noopener">LINEで送る</a>
+        <button type="button" class="btn btn-ghost" id="btn-link-share">ほかのアプリで送る</button>
+        <button type="button" class="btn btn-ghost" id="btn-link-copy">コピー</button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-ghost" data-close>閉じる</button>
+    </div>
+  </div>
 </div>
 
 <div class="loading" id="loading" hidden><div class="loading-card"><span class="spinner" aria-hidden="true"></span><p id="loading-text">読み込み中…</p></div></div>

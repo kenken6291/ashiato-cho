@@ -1,4 +1,4 @@
-/* あしあと帳 — style.css v1.4.0
+/* あしあと帳 — style.css v1.5.0
    モチーフ：スタンプ帳（押すたびに朱色の印が残る）＋地図の等高線 */
 
 :root {
@@ -833,3 +833,38 @@ input:focus, textarea:focus, .select:focus { border-color: var(--moss); outline:
 .share-default { margin-top: 10px; font-size: .9rem; line-height: 1.5; align-items: flex-start; }
 .share-default input, .priv-row input, #form-edit .check input { width: 22px; height: 22px; accent-color: var(--moss); flex: none; }
 .share-none { padding: 6px 0; }
+
+/* =========================================================
+   v1.5.0 デフォルト非公開・LINEなどで送る
+   ========================================================= */
+.btn-line { background: #06C755; color: #fff; text-decoration: none; }
+.btn-line:visited { color: #fff; }
+.log-pub { font-size: .72rem; background: var(--moss-soft); border: 1px solid var(--moss); color: var(--moss); border-radius: 999px; padding: 0 8px; font-weight: 700; }
+.log-actions { flex-wrap: wrap; }
+.log-actions button.is-pub { color: var(--moss); font-weight: 700; }
+.pub-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  margin-top: 8px; padding: 8px 10px; border-radius: var(--r-s); background: var(--surface-2); border: 1.5px dashed var(--line); font-size: .88rem;
+}
+.pub-row.on { border-style: solid; border-color: var(--moss); background: var(--moss-soft); }
+.cd-tools { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.cd-pub { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; padding: 8px 10px; border-radius: var(--r-s); background: var(--surface-2); }
+.cd-pub .small { flex: 1 1 100%; }
+.cd-pub .btn:disabled { opacity: .45; }
+#modal-detail .modal-actions .btn-line { padding: 0 14px; }
+.link-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.link-btns .btn { flex: 1 1 140px; }
+#link-url { font-size: .85rem; }
+#link-setup { display: flex; flex-direction: column; gap: 14px; }
+.link-panel { border-top: 5px solid #06C755; }
+.link-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.lk-row { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.lk-row.dead { opacity: .55; }
+.lk-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.lk-main b { overflow-wrap: anywhere; font-size: .92rem; }
+.lk-btns { display: inline-flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.lk-btns button { border: 1.5px solid var(--line); background: var(--surface); border-radius: 999px; min-height: 36px; padding: 0 12px; cursor: pointer; font-weight: 700; font-size: .8rem; color: var(--ink); }
+.lk-btns button.del { color: var(--shu); }
+.link-main { padding-bottom: 40px; }
+.link-cta { margin-top: 18px; text-align: center; }
+.link-cta .btn { margin-top: 10px; }

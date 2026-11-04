@@ -1,9 +1,9 @@
-/* あしあと帳 — app.js（SPA） v1.4.0 */
+/* あしあと帳 — app.js（SPA） v1.5.0 */
 (() => {
   'use strict';
 
   const CFG = window.APP_CONFIG || {};
-  const VERSION = CFG.VERSION || 'v1.4.0';
+  const VERSION = CFG.VERSION || 'v1.5.0';
   const APP_NAME = CFG.APP_NAME || 'あしあと帳';
   const LS = { token: 'ashiato.token', user: 'ashiato.user', gas: 'ashiato.gasUrl', queue: 'ashiato.queue', mode: 'ashiato.mode', hist: 'ashiato.histView' };
 
@@ -116,6 +116,7 @@
     const old = state.logIndex[l.logId];
     if (old && old !== l && !('memos' in l) && old.memos) { l.memos = old.memos; l.memoCount = old.memoCount; }
     if (old && old._share && !l._share) l._share = old._share;
+    if (old && old._link && !l._link) l._link = old._link;
     state.logIndex[l.logId] = l;
     return l;
   }
@@ -125,8 +126,12 @@
     return (d.getFullYear() !== new Date().getFullYear() ? d.getFullYear() + '/' : '') + (d.getMonth() + 1) + '/' + d.getDate() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
   function shiftMonth(ym, n) { const p = ym.split('-').map(Number); const d = new Date(p[0], p[1] - 1 + n, 1); return d.getFullYear() + '-' + pad(d.getMonth() + 1); }
-  function prefPrivateDefault() { return !!(state.user && state.user.prefs && state.user.prefs.privateDefault); }
-  function updatePrivBadge() { $('#rec-priv-badge').hidden = !$('#rec-private').checked; }
+  /** 公開はデフォルト非公開。設定で「最初から公開」を選んだ人だけ公開から始まる */
+  function prefPublicDefault() { return !!(state.user && state.user.prefs && state.user.prefs.publicDefault); }
+  function updatePrivBadge() { $('#rec-priv-badge').hidden = !$('#rec-public').checked; }
+  /** 見るだけの記録（公開してもらった人・共有リンク） */
+  function isRo(l) { return !!(l && (l._share || l._link)); }
+  function appBaseUrl() { return location.origin + location.pathname.replace(/index\.html$/, ''); }
   function starsText(n) { return n ? '★'.repeat(n) : ''; }
   function blobToDataUrl(blob) {
     return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(new Error('ファイルを読み込めませんでした')); r.readAsDataURL(blob); });
@@ -274,6 +279,9 @@
         if (Date.now() - (state.gps.at || 0) > 180000) startGps();
       }
     });
+
+    const linkId = new URLSearchParams(location.search).get('v');
+    if (linkId) { showLinkView(linkId); return; }
 
     if (state.token) {
       try {
@@ -435,7 +443,7 @@
     loadMemories();
     renderMode();
     loadOpen();
-    $('#rec-private').checked = prefPrivateDefault();
+    $('#rec-public').checked = prefPublicDefault();
     updatePrivBadge();
     if (state.pendingShare) {
       addAttach({ type: 'url', url: state.pendingShare.url, title: state.pendingShare.title });
@@ -457,7 +465,7 @@
       if (b) onCatTap(state.cats[Number(b.dataset.i)], b);
     });
     $('#btn-mic').addEventListener('click', () => toggleDictation());
-    $('#rec-private').addEventListener('change', updatePrivBadge);
+    $('#rec-public').addEventListener('change', updatePrivBadge);
     $$('.mode-seg button').forEach(b => b.addEventListener('click', () => {
       state.recMode = b.dataset.mode;
       lsSet(LS.mode, state.recMode);
@@ -567,6 +575,7 @@
     });
     $('#btn-flush').addEventListener('click', () => flushQueue(true));
     bindShares();
+    bindLinks();
   }
 
   function switchTab(name) {
@@ -682,7 +691,7 @@
       category: cat.label, tags: Array.from(state.tags), note: $('#rec-note').value.trim(),
       fun: state.fun || (state.attach.length || cat.label === 'おもしろ発見' ? 1 : 0),
       capsuleUntil: capsuleDate(),
-      private: $('#rec-private').checked
+      private: !$('#rec-public').checked
     };
     if (asEvent) base.kind = eventKind;
     const hasMedia = state.attach.length > 0;
@@ -798,7 +807,7 @@
     state.fun = 0;
     renderStars($('#rec-stars'), 0, v => { state.fun = v; });
     $('#rec-capsule').value = '';
-    $('#rec-private').checked = prefPrivateDefault();
+    $('#rec-public').checked = prefPublicDefault();
     updatePrivBadge();
     $('#extras').open = false;
   }
@@ -1311,7 +1320,7 @@
   function logHtml(l, opts) {
     opts = opts && typeof opts === 'object' ? opts : {};
     indexLog(l);
-    const ro = !!l._share;
+    const ro = isRo(l);
     const place = l.placeName || l.area || (l.lat != null ? '位置のみ' : '場所なし');
     let body = '';
     if (l.sealed) {
@@ -1332,6 +1341,8 @@
     else if (!ro) {
       acts = (l.kind === 'start' && !l.pairAt ? '<button type="button" data-act="end">■ 終了する</button>' : '') +
         (l.sealed ? '' : '<button type="button" data-act="memo">📝 メモ</button>') +
+        (l.sealed ? '' : '<button type="button" data-act="pub" class="' + (l.private ? '' : 'is-pub') + '">' + (l.private ? '🙈 自分だけ' : '👁 公開中') + '</button>') +
+        (l.sealed ? '' : '<button type="button" data-act="send">📤 送る</button>') +
         '<button type="button" data-act="edit">' + (isEv ? '時刻を直す' : '直す') + '</button>';
     }
     const cls = ' ev-' + (l.kind || 'point') + (l.kind === 'start' && !l.pairAt ? ' is-open' : '') + (l.kind === 'end' && !l.pairAt ? ' is-orphan' : '');
@@ -1340,7 +1351,7 @@
       '<span class="log-cat">' + esc(catEmoji(l.category)) + ' ' + esc(l.category) + '</span>' +
       '<span class="log-time">' + esc(isEv ? eventText(l) : fmtTime(l.timestamp)) + '</span>' +
       (l.fun ? '<span class="log-star" aria-label="おもしろ度' + l.fun + '">' + starsText(l.fun) + '</span>' : '') +
-      (l.private ? '<span class="log-priv">🙈 自分だけ</span>' : '') +
+      (!ro && !l.pending && l.private === false ? '<span class="log-pub">👁 公開</span>' : '') +
       (l.memoCount ? '<span class="log-mc" aria-label="メモ' + l.memoCount + '件">📝' + l.memoCount + '</span>' : '') + '</div>' +
       '<div class="log-place">' + esc(place) + '</div>' + body +
       (acts ? '<div class="log-actions">' + acts + '</div>' : '') + '</li>';
@@ -1423,8 +1434,10 @@
     const l = state.logIndex[el.dataset.id];
     if (!l || l.pending) return;
     const act = ev.target.closest('[data-act]');
-    if (act && !l._share) {
+    if (act && !isRo(l)) {
       if (act.dataset.act === 'edit') { openEdit(l); return; }
+      if (act.dataset.act === 'pub') { togglePublic(l); return; }
+      if (act.dataset.act === 'send') { openLinkModal({ logId: l.logId, dateKey: l.dateKey }); return; }
       if (act.dataset.act === 'end') { endCategory(l.category); return; }
       if (act.dataset.act === 'memo') { openDetail(l.logId, { memo: true }); return; }
     }
@@ -1455,19 +1468,24 @@
 
   function renderDetail(l) {
     const box = $('#detail-body');
-    const ro = !!l._share;
+    const ro = isRo(l);
     const place = l.placeName || l.area || '場所なし';
     let html = '<h3 id="detail-title">' + esc(catEmoji(l.category)) + ' ' + esc(l.category) + '</h3>' +
-      '<p class="muted small">' + fmtDay(l.dateKey, true) + ' ' + fmtTime(l.timestamp) + '｜' + esc(place) +
-      (l.private ? '｜🙈 自分だけ' : '') + (ro ? '｜見るだけ' : '') + '</p>';
+      '<p class="muted small">' + fmtDay(l.dateKey, true) + ' ' + fmtTime(l.timestamp) + '｜' + esc(place) + (ro ? '｜見るだけ' : '') + '</p>';
+    if (!ro && !l.sealed) {
+      html += '<div class="pub-row' + (l.private ? '' : ' on') + '"><span>' + (l.private ? '🙈 いまは自分だけ（公開相手には見えません）' : '👁 公開中（公開相手に見えます）') + '</span>' +
+        '<button type="button" class="btn btn-ghost small-btn" data-pub>' + (l.private ? '公開する' : '自分だけにする') + '</button></div>';
+    }
     if (l.kind === 'start' || l.kind === 'end') html += '<p class="small detail-ev">' + esc(eventText(l)) + '</p>';
     if (l.sealed) {
       html += '<div class="sealed-big"><span aria-hidden="true">🔒</span><p>' + fmtDay(l.capsuleUntil, true) + 'に開けられるタイムカプセルです。<br>それまで中身は見えません。</p></div>';
       box.innerHTML = html;
       $('#btn-detail-edit').hidden = true;
+      $('#btn-detail-send').hidden = true;
       return;
     }
     $('#btn-detail-edit').hidden = ro;
+    $('#btn-detail-send').hidden = ro;
     html += ro
       ? (l.fun ? '<p class="log-star detail-star" aria-label="おもしろ度' + l.fun + '">' + starsText(l.fun) + '</p>' : '')
       : '<div class="field-row"><span class="field-label">おもしろ度</span><div class="stars" id="detail-stars"></div></div>';
@@ -1499,6 +1517,7 @@
       }
       if (ro) return;
       const cur = state.logIndex[l.logId] || l;
+      if (ev.target.closest('[data-pub]')) { togglePublic(cur); return; }
       const mic = ev.target.closest('#btn-memo-mic');
       if (mic) { toggleDictation({ ta: $('#memo-new'), btn: mic, live: $('#memo-live'), max: 1000 }); return; }
       const add = ev.target.closest('[data-memo-add]');
@@ -1538,7 +1557,7 @@
     const sec = $('#detail-body .memo-sec');
     if (!sec || state.detailId !== l.logId) return;
     if (dict.active && dict.ta && sec.contains(dict.ta)) stopDictation();
-    sec.outerHTML = memoSectionHtml(l, !!l._share);
+    sec.outerHTML = memoSectionHtml(l, isRo(l));
   }
 
   function applyMemos(l, memos) {
@@ -1623,9 +1642,11 @@
     if (!r) {
       try {
         if (userAction) block.classList.add('busy');
-        r = l._share
-          ? await api('sharedMedia', { shareId: l._share, logId: l.logId, mediaId: m.id })
-          : await api('getMedia', { logId: l.logId, mediaId: m.id });
+        r = l._link
+          ? await api('linkMedia', { id: l._link, logId: l.logId, mediaId: m.id })
+          : l._share
+            ? await api('sharedMedia', { shareId: l._share, logId: l.logId, mediaId: m.id })
+            : await api('getMedia', { logId: l.logId, mediaId: m.id });
         if (r.dataUrl && r.dataUrl.length < 6000000) state.mediaCache[m.id] = r;
       } catch (e) { toast(e.message, 'err'); block.classList.remove('busy'); return; }
       block.classList.remove('busy');
@@ -1768,7 +1789,7 @@
     fillCategorySelect(f, l.category, l.kind === 'start' || l.kind === 'end');
     f.placeName.value = l.placeName || '';
     f.note.value = l.note || '';
-    f.private.checked = !!l.private;
+    f.public.checked = l.private === false;
     $('#edit-memo-hint').hidden = false;
     renderStars($('#edit-stars'), state.editFun, v => { state.editFun = v; });
     const isEv = l.kind === 'start' || l.kind === 'end';
@@ -1791,7 +1812,7 @@
     state.editFun = 0;
     const f = $('#form-edit');
     f.reset();
-    f.private.checked = prefPrivateDefault();
+    f.public.checked = prefPublicDefault();
     $('#edit-memo-hint').hidden = true;
     $('#edit-time').classList.remove('partner-first');
     let now = new Date();
@@ -2018,7 +2039,18 @@
     const sum = cats.reduce((a, x) => a + tot[x], 0);
     const count = shown.filter(l => l.kind !== 'end').length;
     let html = '<div class="cd-panel"><div class="cd-head"><h3>' + fmtDay(d, true) + '</h3><span class="muted small">' + count + '件' + (sum ? '・計測 ' + fmtMin(sum) : '') + '</span></div>';
-    if (!ro) html += '<button type="button" class="btn btn-ghost small-btn cd-add" data-cal="add">＋ この日に開始・終了を追加</button>';
+    if (!ro) {
+      const pubable = shown.filter(l => !l.sealed);
+      const pubN = pubable.filter(l => l.private === false).length;
+      html += '<div class="cd-tools">' +
+        '<button type="button" class="btn btn-ghost small-btn" data-cal="add">＋ 開始・終了を追加</button>' +
+        (pubable.length ? '<button type="button" class="btn btn-line small-btn" data-cal="send">📤 この日を送る</button>' : '') + '</div>';
+      if (pubable.length) {
+        html += '<div class="cd-pub"><span class="small">公開相手に見える記録：<b>' + pubN + ' / ' + pubable.length + '件</b></span>' +
+          '<button type="button" class="btn btn-ghost small-btn" data-cal="puball"' + (pubN === pubable.length ? ' disabled' : '') + '>👁 全部公開</button>' +
+          '<button type="button" class="btn btn-ghost small-btn" data-cal="privall"' + (!pubN ? ' disabled' : '') + '>🙈 全部自分だけ</button></div>';
+      }
+    }
     if (!shown.length && !cats.length) {
       html += '<p class="trail-empty">この日のあしあとはありません。</p>';
     } else {
@@ -2038,6 +2070,8 @@
       if (a === 'prev' || a === 'next') { c.month = shiftMonth(c.month, a === 'prev' ? -1 : 1); calLoad(c); }
       else if (a === 'today') { c.sel = ymd(new Date()); c.month = c.sel.slice(0, 7); calLoad(c); }
       else if (a === 'add') openNewEvent(c.sel);
+      else if (a === 'send') openLinkModal({ dateKey: c.sel });
+      else if (a === 'puball' || a === 'privall') setDayPublic(c, a === 'puball');
       return;
     }
     const day = ev.target.closest('[data-day]');
@@ -2055,7 +2089,7 @@
     const seg = ev.target.closest('.seg[data-id]');
     if (seg) {
       const l = state.logIndex[seg.dataset.id];
-      if (l) { if (l._share) openDetail(l.logId); else openEdit(l); }
+      if (l) { if (isRo(l)) openDetail(l.logId); else openEdit(l); }
       return;
     }
     if (ev.target.closest('.day-map')) return;
@@ -2220,13 +2254,14 @@
       } catch (e) { toast(e.message, 'err'); }
     });
 
-    $('#pref-private-default').addEventListener('change', async ev => {
+    $('#pref-public-default').addEventListener('change', async ev => {
       const prefs = Object.assign({}, state.user.prefs || {});
-      prefs.privateDefault = ev.target.checked;
+      prefs.publicDefault = ev.target.checked;
+      delete prefs.privateDefault;
       await savePrefs(prefs);
-      $('#rec-private').checked = prefPrivateDefault();
+      $('#rec-public').checked = prefPublicDefault();
       updatePrivBadge();
-      toast(prefs.privateDefault ? '新しい記録は最初から「🙈 自分だけ」になります' : '新しい記録は最初から公開相手に見えます');
+      toast(prefs.publicDefault ? '新しい記録は最初から公開相手に見えます' : '新しい記録は最初は自分だけ（非公開）になります');
     });
   }
 
@@ -2283,6 +2318,152 @@
     openModal('modal-share');
   }
 
+
+  /* ================= 公開・非公開の切り替え（デフォルトは非公開） ================= */
+  async function togglePublic(l) {
+    const toPublic = l.private !== false;
+    try {
+      const r = await api('updateLog', { logId: l.logId, fields: { private: !toPublic } });
+      updateLogEverywhere(r.log);
+      if (r.partner) indexLog(r.partner);
+      if (l.pairId || (state.tab === 'history' && state.histView === 'cal')) refreshLists();
+      toast(toPublic ? '👁 公開しました（公開相手に見えます）' : '🙈 自分だけにしました');
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  async function setDayPublic(c, toPublic) {
+    if (!toPublic && !confirm(fmtDay(c.sel) + 'の記録を全部「自分だけ」にしますか？')) return;
+    try {
+      const r = await withLoading(toPublic ? '公開しています…' : '自分だけにしています…', () => api('setDayPrivate', { dateKey: c.sel, private: !toPublic }));
+      toast(fmtDay(c.sel) + 'の記録を' + (toPublic ? '全部公開しました' : '全部自分だけにしました') + '（' + r.changed + '件）');
+      calLoad(c);
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  /* ================= LINEなどで送る（共有リンク） ================= */
+  function openLinkModal(t) {
+    state.linkTarget = t;
+    const hasLog = !!t.logId;
+    $('#link-scope-row').hidden = !hasLog;
+    $('#link-scope').value = hasLog ? 'log' : 'day';
+    const l = hasLog ? state.logIndex[t.logId] : null;
+    $('#link-what').textContent = l
+      ? fmtDay(l.dateKey, true) + ' ' + fmtTime(l.timestamp) + '「' + catEmoji(l.category) + ' ' + l.category + '」を、LINEやメールで送れるリンクにします。'
+      : fmtDay(t.dateKey, true) + 'のあしあと（その日の記録すべて）を、LINEやメールで送れるリンクにします。';
+    $('#link-geo').value = 'area';
+    $('#link-days').value = '7';
+    $('#link-setup').hidden = false;
+    $('#link-out').hidden = true;
+    $('#btn-link-make').disabled = false;
+    openModal('modal-link');
+  }
+
+  function linkMessage(t, scope) {
+    const name = (state.user && state.user.nickname) || '';
+    const l = t.logId ? state.logIndex[t.logId] : null;
+    if (scope === 'log' && l) {
+      return name + 'さんのあしあと：' + fmtDay(l.dateKey) + ' ' + fmtTime(l.timestamp) + ' ' + catEmoji(l.category) + l.category + (l.note ? '「' + l.note.slice(0, 40) + '」' : '');
+    }
+    return name + 'さんの' + fmtDay(t.dateKey) + 'のあしあと';
+  }
+
+  function bindLinks() {
+    $('#btn-link-make').addEventListener('click', async () => {
+      const t = state.linkTarget;
+      if (!t) return;
+      const scope = $('#link-scope').value;
+      const btn = $('#btn-link-make');
+      btn.disabled = true;
+      try {
+        const r = await withLoading('リンクを作っています…', () => api('createLink', {
+          type: scope, logId: t.logId || '', dateKey: t.dateKey, geoLevel: $('#link-geo').value, days: Number($('#link-days').value)
+        }));
+        const url = appBaseUrl() + '?v=' + r.link.linkId;
+        const text = linkMessage(t, scope) + (r.link.expiresAt ? '（' + fmtShort(ymd(new Date(r.link.expiresAt))) + 'まで見られます）' : '');
+        state.linkShare = { url: url, text: text };
+        $('#link-url').value = url;
+        $('#btn-line').href = 'https://line.me/R/share?text=' + encodeURIComponent(text + '\n' + url);
+        $('#btn-link-share').hidden = !navigator.share;
+        $('#link-setup').hidden = true;
+        $('#link-out').hidden = false;
+      } catch (e) { toast(e.message, 'err'); btn.disabled = false; }
+    });
+    $('#btn-link-copy').addEventListener('click', async () => {
+      const v = state.linkShare ? state.linkShare.text + '\n' + state.linkShare.url : $('#link-url').value;
+      try { await navigator.clipboard.writeText(v); toast('コピーしました。LINEやメールに貼り付けてください'); }
+      catch (e) { $('#link-url').select(); toast('リンクを長押ししてコピーしてください', 'err'); }
+    });
+    $('#btn-link-share').addEventListener('click', async () => {
+      if (!state.linkShare || !navigator.share) return;
+      try { await navigator.share({ title: APP_NAME, text: state.linkShare.text, url: state.linkShare.url }); } catch (e) { }
+    });
+    $('#btn-detail-send').addEventListener('click', () => {
+      const l = state.logIndex[state.detailId];
+      if (!l) return;
+      closeModal('modal-detail');
+      openLinkModal({ logId: l.logId, dateKey: l.dateKey });
+    });
+    $('#link-list').addEventListener('click', async ev => {
+      const li = ev.target.closest('[data-lid]');
+      if (!li) return;
+      const url = appBaseUrl() + '?v=' + li.dataset.lid;
+      if (ev.target.closest('[data-lcopy]')) {
+        try { await navigator.clipboard.writeText(url); toast('リンクをコピーしました'); } catch (e) { toast(url); }
+        return;
+      }
+      if (ev.target.closest('[data-lrevoke]')) {
+        if (!confirm('このリンクを取り消しますか？受け取った人はすぐ見られなくなります。')) return;
+        try {
+          const r = await api('revokeLink', { linkId: li.dataset.lid });
+          renderLinks(r.links);
+          toast('リンクを取り消しました');
+        } catch (e) { toast(e.message, 'err'); }
+      }
+    });
+    $('#btn-link-join').addEventListener('click', () => { location.href = appBaseUrl(); });
+  }
+
+  async function loadLinks() {
+    const ul = $('#link-list');
+    ul.innerHTML = '<li class="muted small">読み込んでいます…</li>';
+    try { renderLinks((await api('listLinks')).links); }
+    catch (e) { ul.innerHTML = '<li class="muted small">' + esc(e.message) + '</li>'; }
+  }
+
+  function renderLinks(links) {
+    const ul = $('#link-list');
+    if (!links.length) { ul.innerHTML = '<li class="muted small">まだ送ったリンクはありません。記録の「📤 送る」から作れます。</li>'; return; }
+    ul.innerHTML = links.map(k => {
+      const dead = k.revoked || k.expired;
+      const status = k.revoked ? '取り消し済み' : k.expired ? '期限切れ' : (k.expiresAt ? fmtShort(ymd(new Date(k.expiresAt))) + 'まで' : '期限なし');
+      return '<li class="lk-row' + (dead ? ' dead' : '') + '" data-lid="' + esc(k.linkId) + '"><div class="lk-main"><b>' + (k.type === 'day' ? '📅 ' : '📍 ') + esc(k.title) + '</b>' +
+        '<span class="small muted">' + fmtShort(ymd(new Date(k.createdAt))) + 'に作成｜' + status + '｜見られた回数 ' + k.views + '｜' + GEO_LABEL[k.geoLevel] + '</span></div>' +
+        (dead ? '' : '<span class="lk-btns"><button type="button" data-lcopy>コピー</button><button type="button" data-lrevoke class="del">取り消す</button></span>') + '</li>';
+    }).join('');
+  }
+
+  /** 共有リンク（?v=…）で開いたとき：ログインなしで、その記録・その日だけを見せる */
+  async function showLinkView(id) {
+    showView('view-link');
+    const body = $('#link-body');
+    body.innerHTML = '<p class="muted">読み込んでいます…</p>';
+    try {
+      const r = await api('viewLink', { id: id }, { noAuthRedirect: true });
+      Object.assign(state.extraCats, r.cats || {});
+      const logs = r.logs.map(l => { l._link = id; return l; });
+      const focus = logs.find(l => l.logId === r.focusId);
+      body.innerHTML = '<h2 class="page-h">' + esc(r.owner.nickname) + ' さんのあしあと</h2>' +
+        '<p class="muted small">' + (r.type === 'log' && focus ? fmtDay(focus.dateKey, true) + ' の記録' : fmtDay(r.dateKey, true) + ' の1日') +
+        '｜見るだけ' + (r.expiresAt ? '｜' + fmtShort(ymd(new Date(r.expiresAt))) + 'まで' : '') + '｜' + GEO_NOTE[r.geoLevel] + '</p>' +
+        '<div class="cal-day"></div>';
+      const c = { root: body, src: { kind: 'link', id: id }, sel: r.dateKey, dayLogs: logs, monthLogs: [], map: null, seq: 0, daySeq: 0 };
+      body.onclick = ev => onCalClick(c, ev);
+      renderCalDay(c);
+      if (focus) setTimeout(() => openDetail(focus.logId), 300);
+    } catch (e) {
+      body.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+    }
+  }
   /* ================= 振り返り ================= */
   function periodRange(pid) {
     const p = PERIODS.find(x => x.id === pid) || PERIODS[0];
@@ -2613,8 +2794,9 @@
       ? custom.map(c => '<li>' + esc(c.emoji) + ' ' + esc(c.label) + '<button type="button" data-label="' + esc(c.label) + '" aria-label="' + esc(c.label) + 'を消す">✕</button></li>').join('')
       : '<li class="muted small none">まだありません</li>';
     updateQueueText();
-    $('#pref-private-default').checked = prefPrivateDefault();
+    $('#pref-public-default').checked = prefPublicDefault();
     loadShares();
+    loadLinks();
     $('#set-gas').textContent = '接続先：' + (getGasUrl() ? getGasUrl().replace(/(.{48}).+(.{8})$/, '$1…$2') : '未設定');
   }
 
@@ -2731,7 +2913,7 @@
       if (!$('#te-partner-block').hidden && !tm.partner) { toast('もう一方の時刻も入れてください', 'err'); return; }
       if (tm.start && tm.end && tm.end < tm.start) { toast('終了は開始より後にしてください', 'err'); return; }
       if (tm.main.getTime() > Date.now() + 60000 || (tm.partner && tm.partner.getTime() > Date.now() + 60000)) { toast('未来の時刻にはできません', 'err'); return; }
-      const common = { category: f.category.value, placeName: f.placeName.value.trim(), note: f.note.value.trim(), fun: state.editFun, private: f.private.checked };
+      const common = { category: f.category.value, placeName: f.placeName.value.trim(), note: f.note.value.trim(), fun: state.editFun, private: !f.public.checked };
       try {
         if (state.editMode === 'new') {
           const t = f.addType.value;
@@ -2825,7 +3007,8 @@
     { big: '🎁', h: 'あとで楽しむ仕掛け', p: '「おもしろ箱」でコレクションを眺めたり、ガチャで昔の発見を引いたり。タイムカプセルに入れた記録は、決めた日まで開けられません。記録タブには「1年前の今日」なども出てきます。' },
     { big: '📝', h: 'あとからメモを書き足す', p: '記録をタップすると「くわしく見る」が開きます。下の「あとからのメモ」に、あとで思い出したことやその後のことを何度でも書き足せます（🗣で話して入力も）。書いたメモは直したり消したりできます。一覧の「📝 メモ」からもすぐ書けます。' },
     { big: '📅', h: 'カレンダーで見返す', p: '「履歴」タブのカレンダーでは、記録の多い日ほど色が濃くなります。日付をタップすると、その日の時間の使い方・地図（番号つき）・あしあとの順番が見られます。' },
-    { big: '👪', h: '家族や友人にだけ見せる', p: '「設定 → あしあとを見せる相手」に会員のメールアドレスを登録すると、その人だけが「みんな」タブであなたのあしあとを見られます（見るだけ）。公開・非公開はスイッチひとつ。見せたくない記録は「🙈 自分だけ」にできます。' },
+    { big: '👪', h: '家族や友人にだけ見せる', p: '「設定 → あしあとを見せる相手」に会員のメールアドレスを登録すると、その人が「みんな」タブであなたのあしあとを見られます（見るだけ）。記録は最初は非公開（自分だけ）。見せたい記録は「👁 公開」に、カレンダーなら1日分まとめて公開もできます。' },
+    { big: '📤', h: 'LINEでその場で送る', p: '記録の「📤 送る」やカレンダーの「📤 この日を送る」で、見るだけのリンクを作ってLINEなどで送れます。受け取った人はログインなしで見られます。期限（1日〜期限なし）と場所の見せ方を選べ、あとから取り消せます。' },
     { big: '📈', h: '何に何時間？を振り返る', p: '「振り返り」タブで1週間から3年まで。何に何時間使ったか、その移り変わり、おもしろベスト、AIのまとめと音声ナレーションで振り返れます。' },
     { big: '🌏', h: '空から旅をたどる', p: '位置データを Google Earth Studio 用に書き出せます。おもしろ発見のあった場所をめぐる、3D空撮風の振り返り動画が作れます。' },
     { big: '📲', h: 'ホーム画面に置くと便利', p: 'ブラウザのメニューから「ホーム画面に追加」すると、アプリのようにすぐ開けます。電波がない場所での記録も、つながったときに自動で送られます（動画を除く）。' }
