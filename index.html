@@ -142,7 +142,7 @@
       </div>
 
       <details class="extras" id="extras">
-        <summary>ひとこと・おもしろ度・気分・タイムカプセル</summary>
+        <summary>ひとこと・おもしろ度・気分・タイムカプセル・公開<span class="priv-badge" id="rec-priv-badge" hidden>🙈 自分だけ</span></summary>
         <div class="extras-body">
           <div class="note-row">
             <textarea id="rec-note" rows="3" maxlength="500" placeholder="例：川沿いを歩いたら金木犀が香っていた"></textarea>
@@ -162,6 +162,7 @@
               <option value="1095">3年後に開く</option>
             </select>
           </label>
+          <label class="check priv-row"><input type="checkbox" id="rec-private"> 🙈 自分だけ（公開相手に見せない）</label>
         </div>
       </details>
 
@@ -187,8 +188,37 @@
     <!-- 履歴 -->
     <section id="tab-history" class="tab" hidden>
       <h2 class="page-h">これまでのあしあと</h2>
-      <div id="history-list"></div>
-      <button type="button" class="btn btn-ghost wide" id="btn-history-more">さらに前の30日を見る</button>
+      <div class="view-seg" role="tablist" aria-label="表示のしかた">
+        <button type="button" role="tab" data-hv="cal">📅 カレンダー</button>
+        <button type="button" role="tab" data-hv="list">☰ リスト</button>
+      </div>
+      <div id="history-cal" class="cal-root"></div>
+      <div id="history-listwrap" hidden>
+        <div id="history-list"></div>
+        <button type="button" class="btn btn-ghost wide" id="btn-history-more">さらに前の30日を見る</button>
+      </div>
+    </section>
+
+    <!-- みんな（公開してもらったあしあと） -->
+    <section id="tab-people" class="tab" hidden>
+      <div id="people-home">
+        <h2 class="page-h">みんなのあしあと</h2>
+        <p class="muted small">あなたに公開してくれている人のあしあとを、見ることができます（見るだけで、書き込みはできません）。</p>
+        <ul class="people-list" id="people-list"></ul>
+        <div class="panel people-note">
+          <h3>自分のあしあとを見せるには</h3>
+          <p class="muted small">「設定 → あしあとを見せる相手」で、家族や友人のメールアドレス（あしあと帳の会員）を登録します。公開・非公開はいつでもワンタップで切り替えられます。</p>
+          <button type="button" class="btn btn-ghost" id="btn-goto-share">見せる相手を管理する</button>
+        </div>
+      </div>
+      <div id="people-view" hidden>
+        <div class="pv-head">
+          <button type="button" class="btn btn-ghost small-btn" id="btn-people-back">‹ もどる</button>
+          <h2 class="page-h" id="pv-name"></h2>
+        </div>
+        <p class="muted small" id="pv-note"></p>
+        <div id="people-cal" class="cal-root"></div>
+      </div>
     </section>
 
     <!-- おもしろ箱 -->
@@ -288,6 +318,31 @@
         <button class="btn btn-ghost" type="submit">ニックネームを保存</button>
       </form>
 
+      <div class="panel share-panel" id="share-panel">
+        <h3>あしあとを見せる相手</h3>
+        <p class="muted small">家族や友人など、あしあと帳に登録している会員を指定して、あなたのあしあとを見せられます。相手は「みんな」タブから見るだけで、直したり書き込んだりはできません。「🙈 自分だけ」にした記録と、封印中のタイムカプセルは見せません。</p>
+        <form class="form share-add" id="form-share-add">
+          <label>相手のメールアドレス（あしあと帳に登録しているもの）<input type="email" name="email" required inputmode="email" autocomplete="off" placeholder="example@mail.com"></label>
+          <div class="two-col">
+            <label>表示名（任意）<input type="text" name="label" maxlength="20" placeholder="例：母"></label>
+            <label>グループ<input type="text" name="group" maxlength="12" list="share-groups" placeholder="例：家族"></label>
+          </div>
+          <label>場所の見せ方
+            <select name="geoLevel" class="select">
+              <option value="exact">📍 地図で正確に見せる</option>
+              <option value="area">🏙 市区町村までにする</option>
+              <option value="none">🚫 場所は見せない</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" name="notify" checked> 相手にお知らせメールを送る</label>
+          <p class="form-msg" role="status"></p>
+          <button class="btn btn-primary" type="submit">この人に公開する</button>
+        </form>
+        <datalist id="share-groups"><option value="家族"><option value="友人"><option value="親せき"><option value="仕事仲間"></datalist>
+        <div id="share-list" class="share-list"></div>
+        <label class="check share-default"><input type="checkbox" id="pref-private-default"> 新しい記録を、最初から「🙈 自分だけ」にする（見せたい記録だけ、あとで公開に切り替える）</label>
+      </div>
+
       <form class="panel form" id="form-change">
         <h3>パスワードの変更</h3>
         <label>現在のパスワード
@@ -348,6 +403,9 @@
     <button type="button" data-tab="review">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span>振り返り</span>
     </button>
+    <button type="button" data-tab="people">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 19c.6-3.4 3-5.2 6-5.2s5.4 1.8 6 5.2"/><circle cx="17" cy="9" r="2.4"/><path d="M16 13.9c2.6.1 4.4 1.6 5 4.6"/></svg><span>みんな</span>
+    </button>
     <button type="button" data-tab="settings">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg><span>設定</span>
     </button>
@@ -397,6 +455,8 @@
     <label>場所の名前<input type="text" name="placeName" maxlength="80"></label>
     <div class="field-row"><span class="field-label">おもしろ度</span><div class="stars" id="edit-stars"></div></div>
     <label>ひとこと<textarea name="note" rows="3" maxlength="500"></textarea></label>
+    <label class="check"><input type="checkbox" name="private"> 🙈 自分だけ（公開相手に見せない）</label>
+    <p class="muted small" id="edit-memo-hint" hidden>あとから書き足すメモは、記録をタップした「くわしく見る」画面で追加・編集できます。</p>
     <div class="modal-actions">
       <button type="button" class="btn btn-danger-ghost" id="btn-edit-delete">この記録を消す</button>
       <span class="spacer"></span>
@@ -501,6 +561,29 @@
       <button type="button" class="btn btn-primary" id="btn-reveal-open" hidden>くわしく見る</button>
     </div>
   </div>
+</div>
+
+<div class="modal" id="modal-share" hidden role="dialog" aria-modal="true" aria-labelledby="share-title">
+  <form class="modal-card form" id="form-share-edit">
+    <h3 id="share-title">公開相手を直す</h3>
+    <p class="muted small" id="share-edit-who"></p>
+    <label>表示名<input type="text" name="label" maxlength="20" placeholder="例：母"></label>
+    <label>グループ<input type="text" name="group" maxlength="12" list="share-groups" placeholder="例：家族"></label>
+    <label>場所の見せ方
+      <select name="geoLevel" class="select">
+        <option value="exact">📍 地図で正確に見せる</option>
+        <option value="area">🏙 市区町村までにする</option>
+        <option value="none">🚫 場所は見せない</option>
+      </select>
+    </label>
+    <label class="check"><input type="checkbox" name="enabled"> 公開する（オフにすると、相手はすぐに見られなくなります）</label>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-danger-ghost" id="btn-share-delete">この相手を外す</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-ghost" data-close>やめる</button>
+      <button type="submit" class="btn btn-primary">保存</button>
+    </div>
+  </form>
 </div>
 
 <div class="loading" id="loading" hidden><div class="loading-card"><span class="spinner" aria-hidden="true"></span><p id="loading-text">読み込み中…</p></div></div>

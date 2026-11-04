@@ -1,11 +1,11 @@
-/* あしあと帳 — app.js（SPA） v1.3.1 */
+/* あしあと帳 — app.js（SPA） v1.4.0 */
 (() => {
   'use strict';
 
   const CFG = window.APP_CONFIG || {};
-  const VERSION = CFG.VERSION || 'v1.3.1';
+  const VERSION = CFG.VERSION || 'v1.4.0';
   const APP_NAME = CFG.APP_NAME || 'あしあと帳';
-  const LS = { token: 'ashiato.token', user: 'ashiato.user', gas: 'ashiato.gasUrl', queue: 'ashiato.queue', mode: 'ashiato.mode' };
+  const LS = { token: 'ashiato.token', user: 'ashiato.user', gas: 'ashiato.gasUrl', queue: 'ashiato.queue', mode: 'ashiato.mode', hist: 'ashiato.histView' };
 
   const DEFAULT_CATS = [
     { label: 'おもしろ発見', emoji: '🤩' },
@@ -36,6 +36,9 @@
   const DRAW_COLORS = ['#1E2B33', '#2E6B5E', '#3E6FB0', '#E3A72F', '#B8432F', '#C2577C', '#7A5230'];
   const DRAW_SIZES = [3, 7, 14];
   const WD = ['日', '月', '火', '水', '木', '金', '土'];
+  const GEO_LABEL = { exact: '📍 地図で正確に', area: '🏙 市区町村まで', none: '🚫 場所は見せない' };
+  const GEO_NOTE = { exact: '場所は地図で表示されます。', area: '場所は市区町村までの表示です。', none: '場所は表示されません。' };
+  const LEAFLET = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/';
 
   const EYE = '<svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
   const EYE_OFF = '<svg viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.2M6.6 6.6C3.8 8.4 2 12 2 12s3.5 7 10 7c1.8 0 3.4-.5 4.8-1.3"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
@@ -72,7 +75,15 @@
     editMode: 'edit',
     todayLogs: [],
     guideStep: 0,
-    guideFirst: false
+    guideFirst: false,
+    histView: lsGet('ashiato.histView') === 'list' ? 'list' : 'cal',
+    myCal: null,
+    peopleCal: null,
+    people: [],
+    person: null,
+    shares: [],
+    editShare: null,
+    extraCats: {}
   };
 
   /* ================= ユーティリティ ================= */
@@ -99,7 +110,23 @@
     const x = Math.sin(dl / 2) ** 2 + Math.cos(a * r) * Math.cos(c * r) * Math.sin(dg / 2) ** 2;
     return 2 * R * Math.asin(Math.min(1, Math.sqrt(x)));
   }
-  function catEmoji(label) { const c = state.cats.find(x => x.label === label); return c ? c.emoji : '📍'; }
+  function catEmoji(label) { const c = state.cats.find(x => x.label === label); return c ? c.emoji : (state.extraCats[label] || '📍'); }
+  /** 記録を索引に入れる（メモを持たない応答で、手元のメモを消さない） */
+  function indexLog(l) {
+    const old = state.logIndex[l.logId];
+    if (old && old !== l && !('memos' in l) && old.memos) { l.memos = old.memos; l.memoCount = old.memoCount; }
+    if (old && old._share && !l._share) l._share = old._share;
+    state.logIndex[l.logId] = l;
+    return l;
+  }
+  function fmtStamp(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return '';
+    return (d.getFullYear() !== new Date().getFullYear() ? d.getFullYear() + '/' : '') + (d.getMonth() + 1) + '/' + d.getDate() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+  function shiftMonth(ym, n) { const p = ym.split('-').map(Number); const d = new Date(p[0], p[1] - 1 + n, 1); return d.getFullYear() + '-' + pad(d.getMonth() + 1); }
+  function prefPrivateDefault() { return !!(state.user && state.user.prefs && state.user.prefs.privateDefault); }
+  function updatePrivBadge() { $('#rec-priv-badge').hidden = !$('#rec-private').checked; }
   function starsText(n) { return n ? '★'.repeat(n) : ''; }
   function blobToDataUrl(blob) {
     return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(new Error('ファイルを読み込めませんでした')); r.readAsDataURL(blob); });
@@ -408,6 +435,8 @@
     loadMemories();
     renderMode();
     loadOpen();
+    $('#rec-private').checked = prefPrivateDefault();
+    updatePrivBadge();
     if (state.pendingShare) {
       addAttach({ type: 'url', url: state.pendingShare.url, title: state.pendingShare.title });
       state.pendingShare = null;
@@ -427,7 +456,8 @@
       const b = ev.target.closest('.cat');
       if (b) onCatTap(state.cats[Number(b.dataset.i)], b);
     });
-    $('#btn-mic').addEventListener('click', toggleDictation);
+    $('#btn-mic').addEventListener('click', () => toggleDictation());
+    $('#rec-private').addEventListener('change', updatePrivBadge);
     $$('.mode-seg button').forEach(b => b.addEventListener('click', () => {
       state.recMode = b.dataset.mode;
       lsSet(LS.mode, state.recMode);
@@ -441,7 +471,7 @@
       if (b.dataset.act === 'end') endCategory(o.category);
       else openEdit(o);
     });
-    $('#btn-add-event').addEventListener('click', openNewEvent);
+    $('#btn-add-event').addEventListener('click', () => openNewEvent());
     $('#today-time').addEventListener('click', ev => {
       const seg = ev.target.closest('[data-id]');
       if (seg && state.logIndex[seg.dataset.id] && !state.logIndex[seg.dataset.id].pending) openEdit(state.logIndex[seg.dataset.id]);
@@ -454,6 +484,20 @@
       onLogClick(ev);
     });
     $('#btn-history-more').addEventListener('click', () => { state.historyDays += 30; loadHistory(); });
+    $$('.view-seg button').forEach(b => b.addEventListener('click', () => setHistView(b.dataset.hv)));
+
+    // みんな（公開してもらったあしあと）
+    $('#people-list').addEventListener('click', ev => {
+      const b = ev.target.closest('[data-share]');
+      if (!b) return;
+      const p = state.people.find(x => x.shareId === b.dataset.share);
+      if (p) openPerson(p);
+    });
+    $('#btn-people-back').addEventListener('click', loadPeople);
+    $('#btn-goto-share').addEventListener('click', () => {
+      switchTab('settings');
+      setTimeout(() => $('#share-panel').scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
+    });
 
     // おもしろ箱
     $('#fun-filters').innerHTML = FUN_FILTERS.map(f => '<button type="button" role="tab" data-f="' + f.id + '">' + f.label + '</button>').join('');
@@ -522,6 +566,7 @@
       await savePrefs(prefs);
     });
     $('#btn-flush').addEventListener('click', () => flushQueue(true));
+    bindShares();
   }
 
   function switchTab(name) {
@@ -533,7 +578,8 @@
     window.scrollTo(0, 0);
     if (name !== 'record') stopDictation();
     if (name === 'record') loadToday();
-    if (name === 'history') { state.historyDays = 30; loadHistory(); }
+    if (name === 'history') setHistView(state.histView);
+    if (name === 'people') loadPeople();
     if (name === 'fun') loadFun(true);
     if (name === 'review') loadReview();
     if (name === 'settings') renderSettings();
@@ -635,7 +681,8 @@
       placeName: g.placeName || '', address: g.address || '', area: g.area || '',
       category: cat.label, tags: Array.from(state.tags), note: $('#rec-note').value.trim(),
       fun: state.fun || (state.attach.length || cat.label === 'おもしろ発見' ? 1 : 0),
-      capsuleUntil: capsuleDate()
+      capsuleUntil: capsuleDate(),
+      private: $('#rec-private').checked
     };
     if (asEvent) base.kind = eventKind;
     const hasMedia = state.attach.length > 0;
@@ -722,11 +769,11 @@
     }).catch(() => { });
   }
 
-  function updateLogEverywhere(log) {
-    state.logIndex[log.logId] = log;
-    $$('.log[data-id="' + log.logId + '"]').forEach(li => { li.outerHTML = logHtml(log); });
+  function updateLogEverywhere(log, opts) {
+    indexLog(log);
+    $$('.log[data-id="' + log.logId + '"]').forEach(li => { li.outerHTML = logHtml(log, { num: Number(li.dataset.num) || 0 }); });
     $$('.tile[data-id="' + log.logId + '"]').forEach(t => { t.outerHTML = tileHtml(log); });
-    if (state.detailId === log.logId && !$('#modal-detail').hidden) renderDetail(log);
+    if (!(opts && opts.skipDetail) && state.detailId === log.logId && !$('#modal-detail').hidden) renderDetail(log);
   }
 
   function stamp(btn, eventKind) {
@@ -751,6 +798,8 @@
     state.fun = 0;
     renderStars($('#rec-stars'), 0, v => { state.fun = v; });
     $('#rec-capsule').value = '';
+    $('#rec-private').checked = prefPrivateDefault();
+    updatePrivBadge();
     $('#extras').open = false;
   }
 
@@ -780,7 +829,7 @@
     const box = $('#open-box');
     box.hidden = !state.open.length;
     $('#open-list').innerHTML = state.open.map(o => {
-      state.logIndex[o.logId] = o;
+      indexLog(o);
       const d = new Date(o.timestamp);
       const when = (ymd(d) !== ymd(new Date()) ? (d.getMonth() + 1) + '/' + d.getDate() + ' ' : '') + fmtTime(o.timestamp);
       return '<li style="--cat-color:' + catColor(o.category) + '"><span class="ol-name">' + esc(catEmoji(o.category)) + ' ' + esc(o.category) + '</span>' +
@@ -835,30 +884,43 @@
       box.innerHTML = dayBarHtml(key, logs) + '<p class="muted small">⏱「開始・終了」でボタンを押して開始、もう一度押して終了すると、その差が何に何時間使ったかとしてここに出てきます。押し忘れたときは「＋ あとから追加」で。</p>';
       return;
     }
-    const max = tot[cats[0]];
     const sum = cats.reduce((a, c) => a + tot[c], 0);
-    box.innerHTML = dayBarHtml(key, logs) +
-      '<ul class="time-list">' + cats.map(c =>
-        '<li><span class="tl-name">' + esc(catEmoji(c)) + ' ' + esc(c) + '</span><span class="tl-bar"><i style="width:' + (tot[c] / max * 100).toFixed(1) + '%;background:' + catColor(c) + '"></i></span><span class="tl-val">' + fmtMin(tot[c]) + '</span></li>'
-      ).join('') + '</ul>' +
+    box.innerHTML = dayBarHtml(key, logs) + timeListHtml(tot, cats) +
       '<p class="muted small">今日の合計：' + fmtMin(sum) + '（帯をタップすると開始・終了の時刻を直せます）</p>';
   }
 
-  /* ---------- 話して入力（間が空いても聞き取り続ける） ---------- */
-  const dict = { active: false, rec: null, stopAt: 0, fatal: '', lastFinal: '' };
+  function timeListHtml(tot, cats) {
+    const max = tot[cats[0]] || 1;
+    return '<ul class="time-list">' + cats.map(c =>
+      '<li><span class="tl-name">' + esc(catEmoji(c)) + ' ' + esc(c) + '</span><span class="tl-bar"><i style="width:' + (tot[c] / max * 100).toFixed(1) + '%;background:' + catColor(c) + '"></i></span><span class="tl-val">' + fmtMin(tot[c]) + '</span></li>'
+    ).join('') + '</ul>';
+  }
 
-  function toggleDictation() { if (dict.active) stopDictation(); else startDictation(); }
+  /* ---------- 話して入力（間が空いても聞き取り続ける）：記録のひとこと・メモの両方で使う ---------- */
+  const dict = { active: false, rec: null, stopAt: 0, fatal: '', lastFinal: '', ta: null, btn: null, live: null, max: 500 };
 
-  function startDictation() {
+  function recDictCfg() {
+    return { ta: $('#rec-note'), btn: $('#btn-mic'), live: $('#dict-live'), max: 500, onStart: () => { $('#extras').open = true; } };
+  }
+
+  function toggleDictation(cfg) {
+    cfg = cfg || recDictCfg();
+    if (dict.active) {
+      const same = dict.btn === cfg.btn;
+      stopDictation();
+      if (same) return;
+    }
+    startDictation(cfg);
+  }
+
+  function startDictation(cfg) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { toast('このブラウザは音声入力に対応していません。「声メモ」なら録音で残せます', 'err'); return; }
-    $('#extras').open = true;
+    if (cfg.onStart) cfg.onStart();
     dict.active = true; dict.fatal = ''; dict.stopAt = Date.now() + 5 * 60 * 1000;
-    $('#btn-mic').classList.add('on');
-    $('#btn-mic').setAttribute('aria-label', '話して入力を止める');
-    const live = $('#dict-live');
-    live.hidden = false;
-    live.textContent = '聞き取り中…（話し終えたら 🗣 をもう一度押してください）';
+    dict.ta = cfg.ta; dict.btn = cfg.btn; dict.live = cfg.live; dict.max = cfg.max || 500;
+    if (dict.btn) { dict.btn.classList.add('on'); dict.btn.setAttribute('aria-label', '話して入力を止める'); }
+    if (dict.live) { dict.live.hidden = false; dict.live.textContent = '聞き取り中…（話し終えたら 🗣 をもう一度押してください）'; }
     runDictation();
   }
 
@@ -877,19 +939,19 @@
         const r = e.results[i];
         if (r.isFinal) addFinal(r[0].transcript); else interim += r[0].transcript;
       }
-      $('#dict-live').textContent = interim ? '…' + interim : '聞き取り中…（間が空いても続けて聞いています）';
+      if (dict.live) dict.live.textContent = interim ? '…' + interim : '聞き取り中…（間が空いても続けて聞いています）';
     };
     rec.onerror = e => {
       if (['not-allowed', 'service-not-allowed', 'audio-capture'].includes(e.error)) dict.fatal = e.error;
     };
     rec.onend = () => {
       dict.rec = null;
-      if (dict.active && !dict.fatal && Date.now() < dict.stopAt) {
+      if (dict.active && !dict.fatal && Date.now() < dict.stopAt && dict.ta && dict.ta.isConnected) {
         // 無音で止まっても、止めるボタンが押されるまで自動で聞き直す
         setTimeout(() => { if (dict.active && !dict.rec) runDictation(); }, 150);
       } else {
         if (dict.fatal) toast('マイクが使えません。ブラウザの設定でマイクを許可してください', 'err');
-        else if (dict.active) toast('5分たったので音声入力を止めました');
+        else if (dict.active && Date.now() >= dict.stopAt) toast('5分たったので音声入力を止めました');
         stopDictation();
       }
     };
@@ -902,25 +964,23 @@
 
   function addFinal(t) {
     t = String(t || '').trim();
-    if (!t) return;
+    if (!t || !dict.ta) return;
     let add = t;
     if (dict.lastFinal && t.indexOf(dict.lastFinal) === 0) add = t.slice(dict.lastFinal.length).trim();
     dict.lastFinal = t;
     if (!add) return;
-    const ta = $('#rec-note');
+    const ta = dict.ta;
     const v = ta.value;
     const sep = !v || /[\s、。！？!?]$/.test(v) ? '' : '、';
-    ta.value = (v + sep + add).slice(0, 500);
+    ta.value = (v + sep + add).slice(0, dict.max);
   }
 
   function stopDictation() {
     const was = dict.active;
     dict.active = false;
     if (dict.rec) { try { dict.rec.stop(); } catch (e) { } }
-    const b = $('#btn-mic');
-    if (b) { b.classList.remove('on'); b.setAttribute('aria-label', '話して入力'); }
-    const live = $('#dict-live');
-    if (live) live.hidden = true;
+    if (dict.btn) { dict.btn.classList.remove('on'); dict.btn.setAttribute('aria-label', '話して入力'); }
+    if (dict.live) dict.live.hidden = true;
     return was;
   }
 
@@ -1248,8 +1308,10 @@
     return '<span class="ico" aria-hidden="true">' + MEDIA_ICON[m.type] + (m.durationSec ? '<small>' + fmtDur(m.durationSec) + '</small>' : '') + '</span>';
   }
 
-  function logHtml(l) {
-    state.logIndex[l.logId] = l;
+  function logHtml(l, opts) {
+    opts = opts && typeof opts === 'object' ? opts : {};
+    indexLog(l);
+    const ro = !!l._share;
     const place = l.placeName || l.area || (l.lat != null ? '位置のみ' : '場所なし');
     let body = '';
     if (l.sealed) {
@@ -1258,31 +1320,41 @@
       const tags = (l.tags || []).map(t => '<span>' + esc(t) + '</span>').join('');
       const media = (l.media || []).slice(0, 5).map(m => '<span class="mthumb mt-' + m.type + '">' + thumbHtml(m) + '</span>').join('');
       const cap = l.ai && l.ai.caption ? '<div class="log-ai">🤖 ' + esc(l.ai.caption) + '</div>' : '';
+      const memos = l.memos || [];
+      const memo = memos.length ? '<div class="log-memo">📝 ' + esc(memos[memos.length - 1].text.slice(0, 80)) + (memos.length > 1 ? '<span class="muted">（ほか' + (memos.length - 1) + '件）</span>' : '') + '</div>' : '';
       body = (media ? '<div class="log-media">' + media + '</div>' : '') + cap +
-        (l.note ? '<div class="log-note">' + esc(l.note) + '</div>' : '') +
+        (l.note ? '<div class="log-note">' + esc(l.note) + '</div>' : '') + memo +
         (tags ? '<div class="log-tags">' + tags + '</div>' : '');
     }
     const isEv = l.kind === 'start' || l.kind === 'end';
-    const acts = l.pending ? '<span class="muted small">送信待ち</span>' :
-      (l.kind === 'start' && !l.pairAt ? '<button type="button" data-act="end">■ 終了する</button>' : '') + '<button type="button" data-act="edit">' + (isEv ? '時刻を直す' : '直す') + '</button>';
+    let acts = '';
+    if (l.pending) acts = '<span class="muted small">送信待ち</span>';
+    else if (!ro) {
+      acts = (l.kind === 'start' && !l.pairAt ? '<button type="button" data-act="end">■ 終了する</button>' : '') +
+        (l.sealed ? '' : '<button type="button" data-act="memo">📝 メモ</button>') +
+        '<button type="button" data-act="edit">' + (isEv ? '時刻を直す' : '直す') + '</button>';
+    }
     const cls = ' ev-' + (l.kind || 'point') + (l.kind === 'start' && !l.pairAt ? ' is-open' : '') + (l.kind === 'end' && !l.pairAt ? ' is-orphan' : '');
-    return '<li class="log' + (l.pending ? ' pending' : '') + (l.fun ? ' is-fun' : '') + cls + '" data-id="' + esc(l.logId) + '"' + (isEv ? ' style="--cat-color:' + catColor(l.category) + '"' : '') + '>' +
-      '<div class="log-head"><span class="log-cat">' + esc(catEmoji(l.category)) + ' ' + esc(l.category) + '</span>' +
+    return '<li class="log' + (l.pending ? ' pending' : '') + (l.fun ? ' is-fun' : '') + (ro ? ' is-shared' : '') + cls + '" data-id="' + esc(l.logId) + '"' + (opts.num ? ' data-num="' + opts.num + '"' : '') + (isEv ? ' style="--cat-color:' + catColor(l.category) + '"' : '') + '>' +
+      '<div class="log-head">' + (opts.num ? '<span class="log-num" aria-label="地図の' + opts.num + '番">' + opts.num + '</span>' : '') +
+      '<span class="log-cat">' + esc(catEmoji(l.category)) + ' ' + esc(l.category) + '</span>' +
       '<span class="log-time">' + esc(isEv ? eventText(l) : fmtTime(l.timestamp)) + '</span>' +
-      (l.fun ? '<span class="log-star" aria-label="おもしろ度' + l.fun + '">' + starsText(l.fun) + '</span>' : '') + '</div>' +
+      (l.fun ? '<span class="log-star" aria-label="おもしろ度' + l.fun + '">' + starsText(l.fun) + '</span>' : '') +
+      (l.private ? '<span class="log-priv">🙈 自分だけ</span>' : '') +
+      (l.memoCount ? '<span class="log-mc" aria-label="メモ' + l.memoCount + '件">📝' + l.memoCount + '</span>' : '') + '</div>' +
       '<div class="log-place">' + esc(place) + '</div>' + body +
-      '<div class="log-actions">' + acts + '</div></li>';
+      (acts ? '<div class="log-actions">' + acts + '</div>' : '') + '</li>';
   }
 
   function tileHtml(l) {
-    state.logIndex[l.logId] = l;
+    indexLog(l);
     if (l.sealed) {
       return '<button type="button" class="tile sealed" data-id="' + esc(l.logId) + '"><span class="tile-vis"><span class="ico">🔒</span></span>' +
         '<span class="tile-cap">' + fmtShort(l.capsuleUntil) + 'に開封</span><span class="tile-date">' + fmtShort(l.dateKey) + 'に封印</span></button>';
     }
     const m = (l.media || [])[0];
     const vis = m ? thumbHtml(m) : '<span class="ico">' + esc(catEmoji(l.category)) + '</span>';
-    const kinds = Array.from(new Set((l.media || []).map(x => MEDIA_ICON[x.type]))).join('');
+    const kinds = Array.from(new Set((l.media || []).map(x => MEDIA_ICON[x.type]))).join('') + (l.memoCount ? '📝' : '');
     const cap = (l.ai && l.ai.caption) || (m && (m.caption || m.title)) || l.note || l.category;
     return '<button type="button" class="tile" data-id="' + esc(l.logId) + '">' +
       '<span class="tile-vis">' + vis + (kinds ? '<span class="tile-kinds">' + kinds + '</span>' : '') + (l.fun ? '<span class="tile-star">' + starsText(l.fun) + '</span>' : '') + '</span>' +
@@ -1351,70 +1423,182 @@
     const l = state.logIndex[el.dataset.id];
     if (!l || l.pending) return;
     const act = ev.target.closest('[data-act]');
-    if (act && act.dataset.act === 'edit') { openEdit(l); return; }
-    if (act && act.dataset.act === 'end') { endCategory(l.category); return; }
+    if (act && !l._share) {
+      if (act.dataset.act === 'edit') { openEdit(l); return; }
+      if (act.dataset.act === 'end') { endCategory(l.category); return; }
+      if (act.dataset.act === 'memo') { openDetail(l.logId, { memo: true }); return; }
+    }
     openDetail(l.logId);
   }
 
   function refreshLists() {
     if (state.tab === 'record') loadToday();
-    if (state.tab === 'history') loadHistory();
+    if (state.tab === 'history') { if (state.histView === 'cal' && state.myCal) calLoad(state.myCal); else loadHistory(); }
     if (state.tab === 'fun') loadFun(true);
     if (state.tab === 'review') loadReview();
   }
 
   /* ================= くわしく見る（メディア再生） ================= */
-  function openDetail(logId) {
+  function openDetail(logId, opts) {
     const l = state.logIndex[logId];
     if (!l) return;
     state.detailId = logId;
     renderDetail(l);
     openModal('modal-detail');
+    if (opts && opts.memo) {
+      setTimeout(() => {
+        const ta = $('#memo-new');
+        if (ta) { ta.scrollIntoView({ block: 'center' }); ta.focus(); }
+      }, 80);
+    }
   }
 
   function renderDetail(l) {
     const box = $('#detail-body');
+    const ro = !!l._share;
     const place = l.placeName || l.area || '場所なし';
     let html = '<h3 id="detail-title">' + esc(catEmoji(l.category)) + ' ' + esc(l.category) + '</h3>' +
-      '<p class="muted small">' + fmtDay(l.dateKey, true) + ' ' + fmtTime(l.timestamp) + '｜' + esc(place) + '</p>';
+      '<p class="muted small">' + fmtDay(l.dateKey, true) + ' ' + fmtTime(l.timestamp) + '｜' + esc(place) +
+      (l.private ? '｜🙈 自分だけ' : '') + (ro ? '｜見るだけ' : '') + '</p>';
+    if (l.kind === 'start' || l.kind === 'end') html += '<p class="small detail-ev">' + esc(eventText(l)) + '</p>';
     if (l.sealed) {
       html += '<div class="sealed-big"><span aria-hidden="true">🔒</span><p>' + fmtDay(l.capsuleUntil, true) + 'に開けられるタイムカプセルです。<br>それまで中身は見えません。</p></div>';
       box.innerHTML = html;
       $('#btn-detail-edit').hidden = true;
       return;
     }
-    $('#btn-detail-edit').hidden = false;
-    html += '<div class="field-row"><span class="field-label">おもしろ度</span><div class="stars" id="detail-stars"></div></div>';
+    $('#btn-detail-edit').hidden = ro;
+    html += ro
+      ? (l.fun ? '<p class="log-star detail-star" aria-label="おもしろ度' + l.fun + '">' + starsText(l.fun) + '</p>' : '')
+      : '<div class="field-row"><span class="field-label">おもしろ度</span><div class="stars" id="detail-stars"></div></div>';
     if (l.note) html += '<p class="detail-note">' + esc(l.note) + '</p>';
     if (l.ai && l.ai.tags && l.ai.tags.length) html += '<div class="log-tags">' + l.ai.tags.map(t => '<span>#' + esc(t) + '</span>').join('') + '</div>';
     if ((l.tags || []).length) html += '<div class="log-tags">' + l.tags.map(t => '<span>' + esc(t) + '</span>').join('') + '</div>';
-    html += '<div class="media-list">' + (l.media || []).map(m => mediaBlockHtml(l, m)).join('') + '</div>';
+    html += '<div class="media-list">' + (l.media || []).map(m => mediaBlockHtml(l, m, ro)).join('') + '</div>';
+    html += memoSectionHtml(l, ro);
     box.innerHTML = html;
 
-    renderStars($('#detail-stars'), l.fun || 0, async v => {
-      try {
-        const r = await api('updateLog', { logId: l.logId, fields: { fun: v } });
-        updateLogEverywhere(r.log);
-      } catch (e) { toast(e.message, 'err'); }
-    });
+    if (!ro) {
+      renderStars($('#detail-stars'), l.fun || 0, async v => {
+        try {
+          const r = await api('updateLog', { logId: l.logId, fields: { fun: v } });
+          updateLogEverywhere(r.log);
+        } catch (e) { toast(e.message, 'err'); }
+      });
+    }
     // 画像は自動で大きく読み込む
     (l.media || []).forEach(m => { if (m.type === 'photo' || m.type === 'drawing') loadMedia(l, m); });
     box.onclick = ev => {
       const b = ev.target.closest('[data-mload]');
       if (b) { const m = l.media.find(x => x.id === b.dataset.mload); if (m) loadMedia(l, m, true); return; }
       const e2 = ev.target.closest('[data-enrich]');
-      if (e2) {
+      if (e2 && !ro) {
         e2.disabled = true; e2.textContent = 'AIが見ています…';
         api('enrichLog', { logId: l.logId, mediaId: e2.dataset.enrich }).then(r => updateLogEverywhere(r.log)).catch(err => toast(err.message, 'err'));
+        return;
       }
+      if (ro) return;
+      const cur = state.logIndex[l.logId] || l;
+      const mic = ev.target.closest('#btn-memo-mic');
+      if (mic) { toggleDictation({ ta: $('#memo-new'), btn: mic, live: $('#memo-live'), max: 1000 }); return; }
+      const add = ev.target.closest('[data-memo-add]');
+      if (add) { addMemo(cur, add); return; }
+      const li = ev.target.closest('li[data-memo]');
+      if (!li) return;
+      if (ev.target.closest('[data-memo-edit]')) startMemoEdit(cur, li);
+      else if (ev.target.closest('[data-memo-del]')) delMemo(cur, li.dataset.memo);
+      else if (ev.target.closest('[data-memo-save]')) saveMemoEdit(cur, li);
+      else if (ev.target.closest('[data-memo-cancel]')) rerenderMemos(cur);
     };
   }
 
-  function mediaBlockHtml(l, m) {
+  /* ---------- メモ（あとから書き足す・直す・消す） ---------- */
+  function memoSectionHtml(l, ro) {
+    const memos = l.memos || [];
+    let h = '<section class="memo-sec" aria-label="メモ"><h4>📝 あとからのメモ' + (memos.length ? '（' + memos.length + '）' : '') + '</h4>';
+    h += memos.length
+      ? '<ul class="memo-list">' + memos.map(m => memoItemHtml(m, ro)).join('') + '</ul>'
+      : '<p class="muted small">' + (ro ? 'メモはありません。' : 'まだメモはありません。あとで思い出したこと、その後どうなったかなどを書き足せます。') + '</p>';
+    if (!ro) {
+      h += '<div class="memo-add"><div class="note-row"><textarea id="memo-new" rows="3" maxlength="1000" placeholder="例：このあと友だちに話したら、同じお店を知っていた"></textarea>' +
+        '<button type="button" class="icon-btn" id="btn-memo-mic" aria-label="話して入力">🗣</button></div>' +
+        '<p class="dict-live small" id="memo-live" hidden></p>' +
+        '<button type="button" class="btn btn-primary small-btn" data-memo-add>＋ メモを書き足す</button></div>';
+    }
+    return h + '</section>';
+  }
+
+  function memoItemHtml(m, ro) {
+    return '<li data-memo="' + esc(m.memoId) + '"><p class="memo-text">' + esc(m.text) + '</p>' +
+      '<div class="memo-meta"><span>' + fmtStamp(m.createdAt) + (m.updatedAt ? '（' + fmtStamp(m.updatedAt) + ' に直した）' : '') + '</span>' +
+      (ro ? '' : '<span class="memo-btns"><button type="button" data-memo-edit>✎ 直す</button><button type="button" data-memo-del class="del">消す</button></span>') + '</div></li>';
+  }
+
+  function rerenderMemos(l) {
+    const sec = $('#detail-body .memo-sec');
+    if (!sec || state.detailId !== l.logId) return;
+    if (dict.active && dict.ta && sec.contains(dict.ta)) stopDictation();
+    sec.outerHTML = memoSectionHtml(l, !!l._share);
+  }
+
+  function applyMemos(l, memos) {
+    l.memos = memos;
+    l.memoCount = memos.length;
+    rerenderMemos(l);
+    updateLogEverywhere(l, { skipDetail: true });
+    [state.myCal].forEach(c => {
+      if (!c) return;
+      c.monthLogs.forEach(x => { if (x.logId === l.logId) { x.memos = memos; x.memoCount = memos.length; } });
+    });
+  }
+
+  async function addMemo(l, btn) {
+    const ta = $('#memo-new');
+    const text = ta.value.trim();
+    if (!text) { toast('メモを入れてください', 'err'); ta.focus(); return; }
+    stopDictation();
+    btn.disabled = true;
+    try {
+      const r = await api('addMemo', { logId: l.logId, text: text });
+      applyMemos(l, r.memos);
+      toast('📝 メモを書き足しました');
+    } catch (e) { toast(e.message, 'err'); btn.disabled = false; }
+  }
+
+  function startMemoEdit(l, li) {
+    const m = (l.memos || []).find(x => x.memoId === li.dataset.memo);
+    if (!m) return;
+    li.innerHTML = '<textarea class="memo-edit" rows="4" maxlength="1000" aria-label="メモを直す">' + esc(m.text) + '</textarea>' +
+      '<div class="memo-meta"><span></span><span class="memo-btns"><button type="button" data-memo-cancel>やめる</button><button type="button" data-memo-save class="save">保存</button></span></div>';
+    const ta = $('textarea', li);
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }
+
+  async function saveMemoEdit(l, li) {
+    const text = $('textarea', li).value.trim();
+    if (!text) { toast('メモが空です。消すときは「消す」を押してください', 'err'); return; }
+    try {
+      const r = await api('updateMemo', { memoId: li.dataset.memo, text: text });
+      applyMemos(l, r.memos);
+      toast('メモを直しました');
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  async function delMemo(l, memoId) {
+    if (!confirm('このメモを消しますか？')) return;
+    try {
+      const r = await api('deleteMemo', { memoId: memoId });
+      applyMemos(l, r.memos);
+      toast('メモを消しました');
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  function mediaBlockHtml(l, m, ro) {
     const id = esc(m.id || '');
     const cap = m.caption ? '<p class="m-cap">🤖 ' + esc(m.caption) + '</p>' : '';
-    const pending = (m.type !== 'url' && !m.ai && !m.aiError) ? '<p class="muted small">AIがひとことを準備中です</p>' : '';
-    const retry = m.aiError ? '<button type="button" class="link-btn small" data-enrich="' + id + '">AIにもう一度見てもらう</button>' : '';
+    const pending = (!ro && m.type !== 'url' && !m.ai && !m.aiError) ? '<p class="muted small">AIがひとことを準備中です</p>' : '';
+    const retry = (!ro && m.aiError) ? '<button type="button" class="link-btn small" data-enrich="' + id + '">AIにもう一度見てもらう</button>' : '';
     if (m.type === 'url') {
       const img = m.image ? '<img src="' + esc(m.image) + '" alt="" referrerpolicy="no-referrer" loading="lazy">' : '';
       return '<a class="url-card" href="' + esc(m.url) + '" target="_blank" rel="noopener noreferrer">' + img +
@@ -1439,7 +1623,9 @@
     if (!r) {
       try {
         if (userAction) block.classList.add('busy');
-        r = await api('getMedia', { logId: l.logId, mediaId: m.id });
+        r = l._share
+          ? await api('sharedMedia', { shareId: l._share, logId: l.logId, mediaId: m.id })
+          : await api('getMedia', { logId: l.logId, mediaId: m.id });
         if (r.dataUrl && r.dataUrl.length < 6000000) state.mediaCache[m.id] = r;
       } catch (e) { toast(e.message, 'err'); block.classList.remove('busy'); return; }
       block.classList.remove('busy');
@@ -1505,7 +1691,7 @@
   }
 
   function showReveal(l, headline) {
-    state.logIndex[l.logId] = l;
+    indexLog(l);
     const m = (l.media || [])[0];
     const vis = m ? thumbHtml(m) : '<span class="ico">' + esc(catEmoji(l.category)) + '</span>';
     const cap = (l.ai && l.ai.caption) || (m && (m.caption || m.title)) || l.note || l.category;
@@ -1558,7 +1744,7 @@
       if (!r.groups.length) { box.hidden = true; return; }
       box.innerHTML = '<p class="mem-h">あの日のあしあと</p><div class="mem-row">' + r.groups.map(g => {
         const l = g.logs[0];
-        state.logIndex[l.logId] = l;
+        indexLog(l);
         const m = (l.media || [])[0];
         const vis = m ? thumbHtml(m) : '<span class="ico">' + esc(catEmoji(l.category)) + '</span>';
         const cap = (l.ai && l.ai.caption) || (m && (m.caption || m.title)) || l.note || (l.category + (l.placeName ? '・' + l.placeName : ''));
@@ -1582,6 +1768,8 @@
     fillCategorySelect(f, l.category, l.kind === 'start' || l.kind === 'end');
     f.placeName.value = l.placeName || '';
     f.note.value = l.note || '';
+    f.private.checked = !!l.private;
+    $('#edit-memo-hint').hidden = false;
     renderStars($('#edit-stars'), state.editFun, v => { state.editFun = v; });
     const isEv = l.kind === 'start' || l.kind === 'end';
     const hasPartner = isEv && !!l.pairId && !!l.pairAt;
@@ -1597,20 +1785,23 @@
     openModal('modal-edit');
   }
 
-  function openNewEvent() {
+  function openNewEvent(dateKey) {
     state.editMode = 'new';
     state.editing = null;
     state.editFun = 0;
     const f = $('#form-edit');
     f.reset();
+    f.private.checked = prefPrivateDefault();
+    $('#edit-memo-hint').hidden = true;
     $('#edit-time').classList.remove('partner-first');
-    const now = new Date();
+    let now = new Date();
     now.setSeconds(0, 0);
     now.setMinutes(Math.floor(now.getMinutes() / 5) * 5);
+    if (typeof dateKey === 'string' && dateKey && dateKey !== ymd(now)) { now = parseYmd(dateKey); now.setHours(13, 0, 0, 0); } // カレンダーで選んだ日
     const cat = state.cats.find(c => POINT_ONLY.indexOf(c.label) < 0);
     fillCategorySelect(f, cat ? cat.label : '', true);
     $('#edit-title').textContent = 'あとから追加';
-    $('#edit-when').textContent = '押し忘れた開始・終了を、時刻を指定して入れられます。';
+    $('#edit-when').textContent = (typeof dateKey === 'string' && dateKey ? fmtDay(dateKey, true) + '｜' : '') + '押し忘れた開始・終了を、時刻を指定して入れられます。';
     $('#te-type-row').hidden = false;
     f.addType.querySelector('option[value=point]').hidden = true;
     f.addType.value = 'both';
@@ -1668,6 +1859,428 @@
     const partner = $('#te-partner-block').hidden ? null : fromLocalInput(f.partner.value);
     if (thisKindFromForm() === 'end') return { main: main, partner: partner, start: partner, end: main };
     return { main: main, partner: partner, start: main, end: partner };
+  }
+
+  /* ================= カレンダー（自分の履歴・公開してもらった人の両方で使う） ================= */
+  function setHistView(v) {
+    state.histView = v === 'list' ? 'list' : 'cal';
+    lsSet(LS.hist, state.histView);
+    $$('.view-seg button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.hv === state.histView)));
+    $('#history-cal').hidden = state.histView !== 'cal';
+    $('#history-listwrap').hidden = state.histView !== 'list';
+    if (state.histView === 'cal') {
+      if (!state.myCal) state.myCal = createCal($('#history-cal'), { kind: 'mine' });
+      calLoad(state.myCal);
+    } else {
+      state.historyDays = 30;
+      loadHistory();
+    }
+  }
+
+  function createCal(root, src) {
+    const c = { root: root, src: src, month: ymd(new Date()).slice(0, 7), sel: ymd(new Date()), monthLogs: [], dayLogs: [], map: null, seq: 0, daySeq: 0 };
+    root.innerHTML = '<div class="cal"></div><div class="cal-day"></div>';
+    root.addEventListener('click', ev => onCalClick(c, ev));
+    return c;
+  }
+
+  function resetCal(c, src) {
+    c.src = src;
+    c.month = ymd(new Date()).slice(0, 7);
+    c.sel = ymd(new Date());
+    c.monthLogs = []; c.dayLogs = [];
+    c.seq++; c.daySeq++;
+    removeCalMap(c);
+    $('.cal', c.root).innerHTML = '';
+    $('.cal-day', c.root).innerHTML = '';
+  }
+
+  async function calFetch(c, from, to, thumbs) {
+    if (c.src.kind === 'mine') return (await api('listLogs', { from: from, to: to, thumbs: thumbs })).logs;
+    const r = await api('sharedLogs', { shareId: c.src.shareId, from: from, to: to, thumbs: thumbs });
+    Object.assign(state.extraCats, r.cats || {});
+    return r.logs.map(l => { l._share = c.src.shareId; return l; });
+  }
+
+  function monthEnd(ym) { const p = ym.split('-').map(Number); return ym + '-' + pad(new Date(p[0], p[1], 0).getDate()); }
+
+  async function calLoad(c) {
+    const seq = ++c.seq;
+    const box = $('.cal', c.root);
+    if (!box.innerHTML) box.innerHTML = '<p class="muted">読み込んでいます…</p>';
+    box.classList.add('busy');
+    let logs;
+    try {
+      logs = await calFetch(c, c.month + '-01', monthEnd(c.month), false);
+    } catch (e) {
+      if (seq === c.seq) calError(c, e);
+      return;
+    } finally {
+      if (seq === c.seq) box.classList.remove('busy');
+    }
+    if (seq !== c.seq) return;
+    c.monthLogs = logs;
+    const today = ymd(new Date());
+    if (!c.sel || c.sel.slice(0, 7) !== c.month) {
+      if (c.month === today.slice(0, 7)) c.sel = today;
+      else {
+        const days = logs.map(l => l.dateKey).filter(d => d.slice(0, 7) === c.month).sort();
+        c.sel = days.length ? days[days.length - 1] : '';
+      }
+    }
+    renderCalGrid(c);
+    calLoadDay(c);
+  }
+
+  function calError(c, e) {
+    if (e.code === 'SHARE_OFF' && c.src.kind === 'share') { toast(e.message, 'err'); loadPeople(); return; }
+    $('.cal', c.root).innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+  }
+
+  function renderCalGrid(c) {
+    const p = c.month.split('-').map(Number);
+    const first = new Date(p[0], p[1] - 1, 1, 12);
+    const ndays = new Date(p[0], p[1], 0).getDate();
+    const today = ymd(new Date());
+    const lastKey = monthEnd(c.month);
+    const by = {};
+    c.monthLogs.forEach(l => { (by[l.dateKey] = by[l.dateKey] || []).push(l); });
+    const mins = minutesByDay(c.monthLogs, dayStartMs(c.month + '-01'), Math.min(Date.now(), dayStartMs(lastKey) + 86400000));
+    let cells = WD.map((w, i) => '<span class="cal-wd' + (i === 0 ? ' sun' : i === 6 ? ' sat' : '') + '">' + w + '</span>').join('');
+    for (let i = 0; i < first.getDay(); i++) cells += '<span class="cal-cell blank" aria-hidden="true"></span>';
+    let total = 0, active = 0, totalMin = 0;
+    for (let d = 1; d <= ndays; d++) {
+      const key = c.month + '-' + pad(d);
+      const all = by[key] || [];
+      const arr = all.filter(l => l.kind !== 'end'); // 開始と終了で二重に数えない
+      const mm = mins[key] || {};
+      let cats = Object.keys(mm).sort((a, b) => mm[b] - mm[a]);
+      if (!cats.length) {
+        const cnt = {};
+        arr.forEach(l => { cnt[l.category] = (cnt[l.category] || 0) + 1; });
+        cats = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a]);
+      }
+      const n = arr.length;
+      total += n; if (n) active++;
+      totalMin += Object.values(mm).reduce((a, b) => a + b, 0);
+      const lv = n === 0 ? 0 : n <= 2 ? 1 : n <= 5 ? 2 : n <= 9 ? 3 : 4;
+      const icons = (arr.some(l => l.mediaCount > 0) ? '📷' : '') + (arr.some(l => l.fun > 0) ? '★' : '') + (all.some(l => l.memoCount > 0) ? '📝' : '');
+      const dow = (first.getDay() + d - 1) % 7;
+      const dots = cats.slice(0, 3).map(x => '<i style="background:' + catColor(x) + '"></i>').join('');
+      cells += '<button type="button" class="cal-cell lv' + lv + (key === today ? ' is-today' : '') + (key === c.sel ? ' is-sel' : '') + (dow === 0 ? ' sun' : dow === 6 ? ' sat' : '') + '" data-day="' + key + '"' +
+        (key > today ? ' disabled' : '') + ' aria-label="' + p[1] + '月' + d + '日 ' + n + '件"' + (key === c.sel ? ' aria-pressed="true"' : '') + '>' +
+        '<span class="cd-num">' + d + '</span>' + (n ? '<span class="cd-n">' + n + '</span>' : '') +
+        '<span class="cd-dots">' + dots + '</span>' + (icons ? '<span class="cd-ic">' + icons + '</span>' : '') + '</button>';
+    }
+    const isNow = c.month >= today.slice(0, 7);
+    $('.cal', c.root).innerHTML =
+      '<div class="cal-nav"><button type="button" class="icon-btn" data-cal="prev" aria-label="前の月">‹</button>' +
+      '<h3>' + p[0] + '年' + p[1] + '月</h3>' +
+      '<button type="button" class="icon-btn" data-cal="next" aria-label="次の月"' + (isNow ? ' disabled' : '') + '>›</button>' +
+      '<button type="button" class="btn btn-ghost small-btn" data-cal="today"' + (isNow && c.sel === today ? ' disabled' : '') + '>今日</button></div>' +
+      '<p class="cal-sum small muted">この月：記録 ' + total + '件・' + active + '日' + (totalMin ? '・計測 ' + fmtMin(totalMin) : '') + '</p>' +
+      '<div class="cal-grid">' + cells + '</div>' +
+      '<div class="cal-legend small muted"><span>少</span><i class="lv1"></i><i class="lv2"></i><i class="lv3"></i><i class="lv4"></i><span>多</span><span class="cl-ic">📷写真など ★おもしろ 📝メモ</span></div>';
+  }
+
+  function removeCalMap(c) { if (c.map) { try { c.map.remove(); } catch (e) { } c.map = null; } }
+
+  async function calLoadDay(c) {
+    const box = $('.cal-day', c.root);
+    removeCalMap(c);
+    const seq = ++c.daySeq;
+    if (!c.sel) { box.innerHTML = '<p class="muted small cal-tip">日付をタップすると、その日のあしあとが見られます。</p>'; return; }
+    box.innerHTML = '<div class="cd-panel"><div class="cd-head"><h3>' + fmtDay(c.sel, true) + '</h3></div><p class="muted">読み込んでいます…</p></div>';
+    let logs;
+    try { logs = await calFetch(c, c.sel, c.sel, true); } catch (e) {
+      if (seq !== c.daySeq) return;
+      if (e.code === 'SHARE_OFF') { calError(c, e); return; }
+      box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+      return;
+    }
+    if (seq !== c.daySeq) return;
+    c.dayLogs = logs;
+    renderCalDay(c);
+  }
+
+  function renderCalDay(c) {
+    const d = c.sel, ro = c.src.kind !== 'mine';
+    const box = $('.cal-day', c.root);
+    removeCalMap(c);
+    const logs = c.dayLogs;
+    const shown = logs.filter(l => l.dateKey === d).sort((a, b) => a.timestamp < b.timestamp ? -1 : 1);
+    const nums = {};
+    let n = 0;
+    shown.forEach(l => { if (l.lat != null && l.lng != null && l.kind !== 'end') nums[l.logId] = ++n; });
+    const byDay = minutesByDay(logs, dayStartMs(d), Math.min(Date.now(), dayStartMs(d) + 86400000));
+    const tot = byDay[d] || {};
+    const cats = Object.keys(tot).sort((a, b) => tot[b] - tot[a]);
+    const sum = cats.reduce((a, x) => a + tot[x], 0);
+    const count = shown.filter(l => l.kind !== 'end').length;
+    let html = '<div class="cd-panel"><div class="cd-head"><h3>' + fmtDay(d, true) + '</h3><span class="muted small">' + count + '件' + (sum ? '・計測 ' + fmtMin(sum) : '') + '</span></div>';
+    if (!ro) html += '<button type="button" class="btn btn-ghost small-btn cd-add" data-cal="add">＋ この日に開始・終了を追加</button>';
+    if (!shown.length && !cats.length) {
+      html += '<p class="trail-empty">この日のあしあとはありません。</p>';
+    } else {
+      html += '<h4 class="cd-sub">時間の使い方</h4>' + dayBarHtml(d, logs) +
+        (cats.length ? timeListHtml(tot, cats) : '<p class="muted small">開始・終了がそろった記録はありません。</p>');
+      if (n) html += '<h4 class="cd-sub">行った場所</h4><div class="day-map" role="region" aria-label="この日の地図"></div><p class="muted small">地図の番号は、下の記録の番号と同じ順番です。</p>';
+      html += '<h4 class="cd-sub">朝から順に</h4><ol class="trail">' + shown.map(l => logHtml(l, { num: nums[l.logId] })).join('') + '</ol>';
+    }
+    box.innerHTML = html + '</div>';
+    if (n) drawDayMap(c, shown.filter(l => nums[l.logId]));
+  }
+
+  function onCalClick(c, ev) {
+    const nav = ev.target.closest('[data-cal]');
+    if (nav) {
+      const a = nav.dataset.cal;
+      if (a === 'prev' || a === 'next') { c.month = shiftMonth(c.month, a === 'prev' ? -1 : 1); calLoad(c); }
+      else if (a === 'today') { c.sel = ymd(new Date()); c.month = c.sel.slice(0, 7); calLoad(c); }
+      else if (a === 'add') openNewEvent(c.sel);
+      return;
+    }
+    const day = ev.target.closest('[data-day]');
+    if (day) {
+      c.sel = day.dataset.day;
+      $$('.cal-cell.is-sel', c.root).forEach(x => { x.classList.remove('is-sel'); x.removeAttribute('aria-pressed'); });
+      day.classList.add('is-sel');
+      day.setAttribute('aria-pressed', 'true');
+      const t = $('[data-cal=today]', c.root);
+      if (t) t.disabled = c.sel === ymd(new Date());
+      calLoadDay(c);
+      setTimeout(() => { const pnl = $('.cal-day', c.root); if (pnl && pnl.getBoundingClientRect().top > window.innerHeight * 0.75) pnl.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
+      return;
+    }
+    const seg = ev.target.closest('.seg[data-id]');
+    if (seg) {
+      const l = state.logIndex[seg.dataset.id];
+      if (l) { if (l._share) openDetail(l.logId); else openEdit(l); }
+      return;
+    }
+    if (ev.target.closest('.day-map')) return;
+    onLogClick(ev);
+  }
+
+  /** 地図（Leaflet＋OpenStreetMap）は使うときだけ読み込む */
+  function ensureLeaflet() {
+    if (window.L && window.L.map) return Promise.resolve();
+    if (ensureLeaflet.p) return ensureLeaflet.p;
+    ensureLeaflet.p = new Promise((resolve, reject) => {
+      const css = document.createElement('link');
+      css.rel = 'stylesheet';
+      css.href = LEAFLET + 'leaflet.css';
+      document.head.appendChild(css);
+      const js = document.createElement('script');
+      js.src = LEAFLET + 'leaflet.js';
+      js.onload = () => resolve();
+      js.onerror = () => { ensureLeaflet.p = null; reject(new Error('地図を読み込めませんでした')); };
+      document.head.appendChild(js);
+    });
+    return ensureLeaflet.p;
+  }
+
+  async function drawDayMap(c, pts) {
+    const el = $('.day-map', c.root);
+    if (!el) return;
+    try { await ensureLeaflet(); } catch (e) {
+      el.innerHTML = '<p class="muted small map-fail">地図を読み込めませんでした（通信状態をご確認ください）</p>';
+      return;
+    }
+    if (!el.isConnected || el.dataset.drawn) return;
+    el.dataset.drawn = '1';
+    removeCalMap(c);
+    const map = L.map(el, { scrollWheelZoom: false });
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+    const lls = pts.map(l => [l.lat, l.lng]);
+    if (lls.length > 1) L.polyline(lls, { color: cssVar('--trail'), weight: 4, opacity: .9, dashArray: '6 8' }).addTo(map);
+    pts.forEach((l, i) => {
+      const icon = L.divIcon({ className: 'num-pin', html: '<span style="background:' + catColor(l.category) + '">' + (i + 1) + '</span>', iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -14] });
+      L.marker([l.lat, l.lng], { icon: icon, title: (i + 1) + '. ' + l.category, zIndexOffset: i })
+        .addTo(map)
+        .bindPopup('<b>' + (i + 1) + '. ' + esc(fmtTime(l.timestamp)) + ' ' + esc(catEmoji(l.category) + ' ' + l.category) + '</b>' + (l.placeName ? '<br>' + esc(l.placeName) : ''));
+    });
+    if (lls.length === 1) map.setView(lls[0], 15);
+    else map.fitBounds(lls, { padding: [30, 30], maxZoom: 16 });
+    c.map = map;
+    setTimeout(() => { if (c.map === map) map.invalidateSize(); }, 80);
+  }
+
+  /* ================= みんな（自分に公開してくれている人） ================= */
+  function showPeopleHome() {
+    $('#people-home').hidden = false;
+    $('#people-view').hidden = true;
+    state.person = null;
+    if (state.peopleCal) { state.peopleCal.seq++; state.peopleCal.daySeq++; removeCalMap(state.peopleCal); }
+  }
+
+  async function loadPeople() {
+    showPeopleHome();
+    window.scrollTo(0, 0);
+    const ul = $('#people-list');
+    ul.innerHTML = '<li class="muted">読み込んでいます…</li>';
+    try {
+      const r = await api('sharedWithMe');
+      state.people = r.people;
+      ul.innerHTML = r.people.length ? r.people.map(p => {
+        const initial = Array.from(p.nickname || '？')[0];
+        return '<li><button type="button" class="person" data-share="' + esc(p.shareId) + '">' +
+          '<span class="avatar" style="background:' + catColor(p.nickname) + '" aria-hidden="true">' + esc(initial) + '</span>' +
+          '<span class="p-body"><b>' + esc(p.nickname) + ' さん</b>' +
+          '<span class="small muted">' + (p.lastDate ? '最近の記録：' + fmtDay(p.lastDate) + '｜この7日で ' + p.recent7 + '件' : 'まだ見られる記録がありません') + '</span></span>' +
+          '<span class="p-go" aria-hidden="true">›</span></button></li>';
+      }).join('') : '<li class="empty">まだ誰からも公開されていません。<br>家族や友人に、あなたの登録メールアドレス（' + esc(state.user.email) + '）を「あしあとを見せる相手」に入れてもらうと、ここに出てきます。</li>';
+    } catch (e) { ul.innerHTML = '<li class="empty">' + esc(e.message) + '</li>'; }
+  }
+
+  function openPerson(p) {
+    state.person = p;
+    $('#people-home').hidden = true;
+    $('#people-view').hidden = false;
+    $('#pv-name').textContent = p.nickname + ' さんのあしあと';
+    $('#pv-note').textContent = '見るだけで、書き込みはできません。' + (GEO_NOTE[p.geoLevel] || '');
+    const src = { kind: 'share', shareId: p.shareId };
+    if (!state.peopleCal) state.peopleCal = createCal($('#people-cal'), src);
+    else resetCal(state.peopleCal, src);
+    calLoad(state.peopleCal);
+    window.scrollTo(0, 0);
+  }
+
+  /* ================= 公開相手の管理（設定） ================= */
+  function bindShares() {
+    $('#form-share-add').addEventListener('submit', async ev => {
+      ev.preventDefault();
+      const f = ev.target, btn = $('button[type=submit]', f);
+      setMsg(f, ''); btn.disabled = true;
+      try {
+        const r = await api('addShare', { email: f.email.value.trim(), label: f.label.value.trim(), group: f.group.value.trim(), geoLevel: f.geoLevel.value, notify: f.notify.checked });
+        state.shares = r.shares;
+        renderShares();
+        const who = f.label.value.trim() || f.email.value.trim();
+        f.reset();
+        setMsg(f, who + ' さんに公開しました。' + (r.mailed ? 'お知らせメールも送りました。' : ''), 'ok');
+      } catch (e) { setMsg(f, e.message, 'err'); }
+      finally { btn.disabled = false; }
+    });
+
+    $('#share-list').addEventListener('click', async ev => {
+      const row = ev.target.closest('[data-sid]');
+      const g = ev.target.closest('[data-gall]');
+      if (g) {
+        const on = g.dataset.gall === 'on';
+        const name = g.dataset.g || 'グループなし';
+        if (!on && !confirm('「' + name + '」の全員への公開を止めますか？')) return;
+        try {
+          const r = await withLoading('切り替えています…', () => api('setGroupShare', { group: g.dataset.g, enabled: on }));
+          state.shares = r.shares;
+          renderShares();
+          toast('「' + name + '」の全員' + (on ? 'に公開しました' : 'への公開を止めました'));
+        } catch (e) { toast(e.message, 'err'); }
+        return;
+      }
+      if (!row) return;
+      const s = state.shares.find(x => x.shareId === row.dataset.sid);
+      if (!s) return;
+      if (ev.target.closest('[data-sedit]')) { openShareEdit(s); return; }
+      const sw = ev.target.closest('[data-toggle]');
+      if (sw) {
+        const next = !s.enabled;
+        sw.disabled = true;
+        try {
+          const r = await api('updateShare', { shareId: s.shareId, fields: { enabled: next } });
+          Object.assign(s, r.share);
+          renderShares();
+          toast(shareName(s) + ' さん' + (next ? 'に公開しました' : 'への公開を止めました'));
+        } catch (e) { toast(e.message, 'err'); sw.disabled = false; }
+      }
+    });
+
+    $('#form-share-edit').addEventListener('submit', async ev => {
+      ev.preventDefault();
+      const f = ev.target, s = state.editShare;
+      if (!s) return;
+      try {
+        const r = await withLoading('保存しています…', () => api('updateShare', { shareId: s.shareId, fields: { label: f.label.value.trim(), group: f.group.value.trim(), geoLevel: f.geoLevel.value, enabled: f.enabled.checked } }));
+        Object.assign(s, r.share);
+        renderShares();
+        closeModal('modal-share');
+        toast('公開相手の設定を保存しました');
+      } catch (e) { toast(e.message, 'err'); }
+    });
+
+    $('#btn-share-delete').addEventListener('click', async () => {
+      const s = state.editShare;
+      if (!s || !confirm(shareName(s) + ' さんを公開相手から外しますか？相手はすぐに見られなくなります。')) return;
+      try {
+        const r = await withLoading('外しています…', () => api('deleteShare', { shareId: s.shareId }));
+        state.shares = r.shares;
+        renderShares();
+        closeModal('modal-share');
+        toast('公開相手から外しました');
+      } catch (e) { toast(e.message, 'err'); }
+    });
+
+    $('#pref-private-default').addEventListener('change', async ev => {
+      const prefs = Object.assign({}, state.user.prefs || {});
+      prefs.privateDefault = ev.target.checked;
+      await savePrefs(prefs);
+      $('#rec-private').checked = prefPrivateDefault();
+      updatePrivBadge();
+      toast(prefs.privateDefault ? '新しい記録は最初から「🙈 自分だけ」になります' : '新しい記録は最初から公開相手に見えます');
+    });
+  }
+
+  function shareName(s) { return s.label || s.nickname || s.email; }
+
+  async function loadShares() {
+    const box = $('#share-list');
+    box.innerHTML = '<p class="muted small">読み込んでいます…</p>';
+    try {
+      const r = await api('listShares');
+      state.shares = r.shares;
+      renderShares();
+    } catch (e) { box.innerHTML = '<p class="muted small">' + esc(e.message) + '</p>'; }
+  }
+
+  function renderShares() {
+    const list = state.shares || [];
+    const box = $('#share-list');
+    if (!list.length) { box.innerHTML = '<p class="muted small share-none">まだ誰にも公開していません。上の欄から相手を追加してください。</p>'; return; }
+    const groups = {}, order = [];
+    list.forEach(s => { const g = s.group || ''; if (!groups[g]) { groups[g] = []; order.push(g); } groups[g].push(s); });
+    order.sort((a, b) => (a === '') - (b === ''));
+    const on = list.filter(s => s.enabled).length;
+    box.innerHTML = '<p class="share-sum">' + list.length + '人のうち <b>' + on + '人に公開中</b></p>' + order.map(g => {
+      const arr = groups[g];
+      const onN = arr.filter(s => s.enabled).length;
+      return '<div class="sg"><div class="sg-h"><span class="sg-name">' + esc(g || 'グループなし') + '</span><span class="sg-count">' + arr.length + '人・公開中 ' + onN + '</span>' +
+        '<span class="sg-btns"><button type="button" data-gall="on" data-g="' + esc(g) + '"' + (onN === arr.length ? ' disabled' : '') + '>全員に公開</button>' +
+        '<button type="button" data-gall="off" data-g="' + esc(g) + '"' + (!onN ? ' disabled' : '') + '>全員止める</button></span></div>' +
+        '<ul class="sh-list">' + arr.map(shareRowHtml).join('') + '</ul></div>';
+    }).join('');
+  }
+
+  function shareRowHtml(s) {
+    const name = shareName(s);
+    const sub = [s.label && s.nickname ? s.nickname : '', s.email].filter(Boolean).join('・');
+    const seen = s.lastViewedAt ? '最後に見た日 ' + fmtShort(ymd(new Date(s.lastViewedAt))) : 'まだ見ていません';
+    return '<li class="sh-row' + (s.enabled ? '' : ' off') + '" data-sid="' + esc(s.shareId) + '">' +
+      '<div class="sh-main"><b>' + esc(name) + '</b><span class="small muted">' + esc(sub) + '</span>' +
+      '<span class="small sh-info">' + GEO_LABEL[s.geoLevel] + '｜' + seen + (s.viewerActive ? '' : '｜⚠ 相手のアカウントが使えません') + '</span></div>' +
+      '<button type="button" class="switch" role="switch" aria-checked="' + s.enabled + '" data-toggle aria-label="' + esc(name) + ' さんへの公開">' +
+      '<span class="sw-track"><span class="sw-knob"></span></span><span class="sw-text">' + (s.enabled ? '公開中' : '停止中') + '</span></button>' +
+      '<button type="button" class="icon-btn sh-edit" data-sedit aria-label="' + esc(name) + ' さんの設定を直す">✎</button></li>';
+  }
+
+  function openShareEdit(s) {
+    state.editShare = s;
+    const f = $('#form-share-edit');
+    $('#share-edit-who').textContent = (s.nickname || '') + '（' + s.email + '）';
+    f.label.value = s.label || '';
+    f.group.value = s.group || '';
+    f.geoLevel.value = s.geoLevel || 'exact';
+    f.enabled.checked = !!s.enabled;
+    openModal('modal-share');
   }
 
   /* ================= 振り返り ================= */
@@ -2000,6 +2613,8 @@
       ? custom.map(c => '<li>' + esc(c.emoji) + ' ' + esc(c.label) + '<button type="button" data-label="' + esc(c.label) + '" aria-label="' + esc(c.label) + 'を消す">✕</button></li>').join('')
       : '<li class="muted small none">まだありません</li>';
     updateQueueText();
+    $('#pref-private-default').checked = prefPrivateDefault();
+    loadShares();
     $('#set-gas').textContent = '接続先：' + (getGasUrl() ? getGasUrl().replace(/(.{48}).+(.{8})$/, '$1…$2') : '未設定');
   }
 
@@ -2064,6 +2679,7 @@
     $('#' + id).hidden = true;
     if (id === 'modal-voice') cleanupVoice();
     if (id === 'modal-detail') {
+      stopDictation();
       state.detailId = null;
       $$('#detail-body audio, #detail-body video').forEach(x => x.pause());
       $$('#detail-body iframe').forEach(x => x.remove());
@@ -2115,7 +2731,7 @@
       if (!$('#te-partner-block').hidden && !tm.partner) { toast('もう一方の時刻も入れてください', 'err'); return; }
       if (tm.start && tm.end && tm.end < tm.start) { toast('終了は開始より後にしてください', 'err'); return; }
       if (tm.main.getTime() > Date.now() + 60000 || (tm.partner && tm.partner.getTime() > Date.now() + 60000)) { toast('未来の時刻にはできません', 'err'); return; }
-      const common = { category: f.category.value, placeName: f.placeName.value.trim(), note: f.note.value.trim(), fun: state.editFun };
+      const common = { category: f.category.value, placeName: f.placeName.value.trim(), note: f.note.value.trim(), fun: state.editFun, private: f.private.checked };
       try {
         if (state.editMode === 'new') {
           const t = f.addType.value;
@@ -2150,7 +2766,7 @@
         const endLog = r.log.kind === 'end' ? r.log : r.partner;
         toast('直しました' + (endLog && endLog.pairAt ? '（差：' + fmtMin(endLog.durationMin) + '）' : ''));
         if (r.open) { state.open = r.open; renderOpen(); }
-        if (fields.start || fields.partner || fields.kind || fields.removePartner || fields.category !== l.category) refreshLists(); else updateLogEverywhere(r.log);
+        if (fields.start || fields.partner || fields.kind || fields.removePartner || fields.category !== l.category || (fields.private !== !!l.private && l.pairId)) refreshLists(); else updateLogEverywhere(r.log);
       } catch (e) { toast(e.message, 'err'); }
     });
     $('#btn-edit-delete').addEventListener('click', async () => {
@@ -2207,6 +2823,9 @@
     { big: '👆', h: 'その場で記録も', p: '「📍 その場で記録」に切り替えると、時間を計らずに「いま、ここで何をしたか」だけ残せます。ひとこと（🗣で話して入力）・気分は、つけたいときだけ。' },
     { big: '🤩', h: 'おもしろいものを見つけたら', p: '📷写真 🎥動画 🎙声メモ ✏️絵 🔗URL で添付してから、やったことのボタン（または「おもしろ発見」）を押します。AIがひとことを添え、声は文字にしてくれます。ほかのアプリの「共有」からURLを送ることもできます。' },
     { big: '🎁', h: 'あとで楽しむ仕掛け', p: '「おもしろ箱」でコレクションを眺めたり、ガチャで昔の発見を引いたり。タイムカプセルに入れた記録は、決めた日まで開けられません。記録タブには「1年前の今日」なども出てきます。' },
+    { big: '📝', h: 'あとからメモを書き足す', p: '記録をタップすると「くわしく見る」が開きます。下の「あとからのメモ」に、あとで思い出したことやその後のことを何度でも書き足せます（🗣で話して入力も）。書いたメモは直したり消したりできます。一覧の「📝 メモ」からもすぐ書けます。' },
+    { big: '📅', h: 'カレンダーで見返す', p: '「履歴」タブのカレンダーでは、記録の多い日ほど色が濃くなります。日付をタップすると、その日の時間の使い方・地図（番号つき）・あしあとの順番が見られます。' },
+    { big: '👪', h: '家族や友人にだけ見せる', p: '「設定 → あしあとを見せる相手」に会員のメールアドレスを登録すると、その人だけが「みんな」タブであなたのあしあとを見られます（見るだけ）。公開・非公開はスイッチひとつ。見せたくない記録は「🙈 自分だけ」にできます。' },
     { big: '📈', h: '何に何時間？を振り返る', p: '「振り返り」タブで1週間から3年まで。何に何時間使ったか、その移り変わり、おもしろベスト、AIのまとめと音声ナレーションで振り返れます。' },
     { big: '🌏', h: '空から旅をたどる', p: '位置データを Google Earth Studio 用に書き出せます。おもしろ発見のあった場所をめぐる、3D空撮風の振り返り動画が作れます。' },
     { big: '📲', h: 'ホーム画面に置くと便利', p: 'ブラウザのメニューから「ホーム画面に追加」すると、アプリのようにすぐ開けます。電波がない場所での記録も、つながったときに自動で送られます（動画を除く）。' }

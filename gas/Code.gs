@@ -3,25 +3,32 @@
  * 行動・位置記録 / おもしろ記録（写真・動画・声・絵・URL）/ 会員認証 / Gemini 分析・自動キャプション
  * Gemini TTS / Google Earth Studio 用データ書き出し / タイムカプセル・あの日・ガチャ
  * 時間記録：「開始」「終了」をそれぞれ時刻として記録し、あとで差分（所要時間）を計算して保存
+ * v1.4.0：各記録へのメモ（追記・編集・削除）／指定した会員にだけ公開（公開相手の管理・閲覧）
  *
  * 初回のみ：エディタで setup() を実行 → スクリプトプロパティに GEMINI_API_KEY を設定 → ウェブアプリとしてデプロイ
  * Gemini のモデルはスクリプトプロパティ GEMINI_MODEL / GEMINI_TTS_MODEL / GEMINI_TTS_VOICE で指定（setup() が初期値を入れます）
  * ※コードを変更したら「デプロイを管理 → 編集 → 新しいバージョン」で再デプロイしないと反映されません
  */
 
-const APP_VERSION = 'v1.3.1';
+const APP_VERSION = 'v1.4.0';
 const MAX_SPAN_MS = 7 * 86400000; // 1つの時間記録の最長（7日）
 const MEDIA_TYPES = ['photo', 'video', 'audio', 'drawing', 'url'];
 const MAX_MEDIA = 6;
 const HASH_ROUNDS = 300; // 変更すると既存パスワードが通らなくなるので固定
+const MEMO_MAX = 1000;      // メモ1件の最大文字数
+const MAX_SHARES = 50;      // 1人が公開できる相手の上限
+const GEO_LEVELS = ['exact', 'area', 'none']; // 公開相手への場所の見せ方：地図で正確に／市区町村まで／見せない
+const SHARE_MAX_DAYS = 62;  // 公開相手が一度に読める期間（日）
 
-const SH = { USERS: 'Users', LOGS: 'Logs', REPORTS: 'Reports', CONFIG: 'Config' };
+const SH = { USERS: 'Users', LOGS: 'Logs', REPORTS: 'Reports', CONFIG: 'Config', MEMOS: 'Memos', SHARES: 'Shares' };
 
 const HEADERS = {
   Users: ['userId', 'email', 'nickname', 'salt', 'passwordHash', 'mustChange', 'status', 'failCount', 'lockUntil', 'onboarded', 'prefs', 'createdAt', 'lastLoginAt'],
-  Logs: ['logId', 'userId', 'timestamp', 'dateKey', 'hour', 'lat', 'lng', 'accuracy', 'placeName', 'address', 'area', 'category', 'tags', 'note', 'photoFileId', 'createdAt', 'updatedAt', 'deleted', 'fun', 'media', 'capsuleUntil', 'capsuleOpenedAt', 'ai', 'kind', 'endAt', 'endDateKey', 'pairId', 'pairAt', 'pairDateKey', 'durationMin'],
+  Logs: ['logId', 'userId', 'timestamp', 'dateKey', 'hour', 'lat', 'lng', 'accuracy', 'placeName', 'address', 'area', 'category', 'tags', 'note', 'photoFileId', 'createdAt', 'updatedAt', 'deleted', 'fun', 'media', 'capsuleUntil', 'capsuleOpenedAt', 'ai', 'kind', 'endAt', 'endDateKey', 'pairId', 'pairAt', 'pairDateKey', 'durationMin', 'private'],
   Reports: ['reportId', 'userId', 'period', 'rangeStart', 'rangeEnd', 'title', 'reportJson', 'script', 'audioFileId', 'createdAt'],
-  Config: ['key', 'value', 'note']
+  Config: ['key', 'value', 'note'],
+  Memos: ['memoId', 'userId', 'logId', 'text', 'createdAt', 'updatedAt', 'deleted'],
+  Shares: ['shareId', 'ownerId', 'viewerId', 'viewerEmail', 'label', 'group', 'enabled', 'geoLevel', 'createdAt', 'updatedAt', 'lastViewedAt']
 };
 
 const DEFAULT_CONFIG = [
@@ -123,7 +130,21 @@ const PRIVATE_API = {
   memories: api_memories,
   gacha: api_gacha,
   capsules: api_capsules,
-  openCapsule: api_openCapsule
+  openCapsule: api_openCapsule,
+  // v1.4.0 メモ
+  addMemo: api_addMemo,
+  updateMemo: api_updateMemo,
+  deleteMemo: api_deleteMemo,
+  // v1.4.0 公開相手（自分が見せる側）
+  listShares: api_listShares,
+  addShare: api_addShare,
+  updateShare: api_updateShare,
+  setGroupShare: api_setGroupShare,
+  deleteShare: api_deleteShare,
+  // v1.4.0 公開されたあしあと（見る側）
+  sharedWithMe: api_sharedWithMe,
+  sharedLogs: api_sharedLogs,
+  sharedMedia: api_sharedMedia
 };
 
 /* =========================================================
@@ -386,12 +407,12 @@ function api_addLog(req, u) {
       const t = table_(SH.LOGS);
       repairPairs_(t, u.obj.userId, [obj.category]);
       const hit = findInTable_(t, obj.logId);
-      return { log: publicLog_(hit ? hit.obj : obj, { thumbs: true }), open: openStarts_(t, u.obj.userId) };
+      return { log: publicLog_(hit ? hit.obj : obj, { thumbs: true, memoMap: {} }), open: openStarts_(t, u.obj.userId) };
     }
   } finally {
     lock.releaseLock();
   }
-  return { log: publicLog_(obj, { thumbs: true }) };
+  return { log: publicLog_(obj, { thumbs: true, memoMap: {} }) };
 }
 
 /** 1件分の記録データを組み立てる（保存はしない） */
@@ -435,13 +456,15 @@ function makeLogObj_(u, l) {
     tags: JSON.stringify(tags), note: String(l.note || '').slice(0, 500),
     photoFileId: photoFileId, createdAt: nowIso_(), updatedAt: '', deleted: 'FALSE',
     fun: String(fun), media: fitMediaJson_(media), capsuleUntil: capsuleUntil, capsuleOpenedAt: '', ai: '',
-    kind: kind, endAt: '', endDateKey: '', pairId: '', pairAt: '', pairDateKey: '', durationMin: ''
+    kind: kind, endAt: '', endDateKey: '', pairId: '', pairAt: '', pairDateKey: '', durationMin: '',
+    private: l.private === true || String(l.private).toUpperCase() === 'TRUE' ? 'TRUE' : 'FALSE'
   };
 }
 
 function api_listLogs(req, u) {
   const r = range_(req);
-  return { logs: getUserLogs_(u.obj.userId, r.from, r.to, { thumbs: !!req.thumbs }), from: r.from, to: r.to };
+  const memoMap = memoMap_(u.obj.userId);
+  return { logs: getUserLogs_(u.obj.userId, r.from, r.to, { thumbs: !!req.thumbs, memoMap: memoMap }), from: r.from, to: r.to };
 }
 
 function api_updateLog(req, u) {
@@ -462,6 +485,7 @@ function api_updateLog(req, u) {
     if (Array.isArray(f.tags)) hit.obj.tags = JSON.stringify(f.tags.map(t => String(t).slice(0, 20)).slice(0, 10));
     if (f.fun !== undefined) hit.obj.fun = String(Math.max(0, Math.min(3, Math.floor(Number(f.fun) || 0))));
     if (f.start) setEventTime_(hit.obj, f.start);
+    if (f.private !== undefined) hit.obj.private = f.private === true || String(f.private).toUpperCase() === 'TRUE' ? 'TRUE' : 'FALSE';
 
     // 記録の種類を変える（その場の記録 ⇔ 開始 ⇔ 終了）
     if (f.kind !== undefined) {
@@ -499,7 +523,8 @@ function api_updateLog(req, u) {
         if (diff > MAX_SPAN_MS) throw new Error('開始から終了までは7日以内にしてください。');
         const p = makeLogObj_(u, {
           category: hit.obj.category, kind: want, timestamp: other.toISOString(), dateKey: f.partner.dateKey, hour: f.partner.hour,
-          lat: hit.obj.lat, lng: hit.obj.lng, placeName: hit.obj.placeName, address: hit.obj.address || '-', area: hit.obj.area
+          lat: hit.obj.lat, lng: hit.obj.lng, placeName: hit.obj.placeName, address: hit.obj.address || '-', area: hit.obj.area,
+          private: toBool_(hit.obj.private)
         });
         if (p.address === '-') p.address = '';
         p.logId = hit.obj.logId + (want === 'end' ? 'E' : 'S') + Math.floor(Math.random() * 90 + 10);
@@ -509,15 +534,20 @@ function api_updateLog(req, u) {
       partner.obj.category = hit.obj.category; // 開始と終了のカテゴリはそろえる
       updateRow_(hit.t, partner.idx, partner.obj);
     }
+    if (f.private !== undefined && partnerOk && !f.removePartner && partner.obj.private !== hit.obj.private) {
+      partner.obj.private = hit.obj.private; // 開始と終了の「自分だけ」もそろえる
+      updateRow_(hit.t, partner.idx, partner.obj);
+    }
 
     if (cats.indexOf(hit.obj.category) < 0) cats.push(hit.obj.category);
     const t = table_(SH.LOGS);
     repairPairs_(t, u.obj.userId, cats);
     const me = findInTable_(t, hit.obj.logId);
     const pair = me && me.obj.pairId ? findInTable_(t, me.obj.pairId) : null;
+    const memoMap = memoMap_(u.obj.userId);
     return {
-      log: publicLog_(me.obj, { thumbs: true }),
-      partner: pair ? publicLog_(pair.obj, { thumbs: true }) : null,
+      log: publicLog_(me.obj, { thumbs: true, memoMap: memoMap }),
+      partner: pair ? publicLog_(pair.obj, { thumbs: true, memoMap: memoMap }) : null,
       open: openStarts_(t, u.obj.userId)
     };
   } finally {
@@ -618,17 +648,25 @@ function getUserRawLogs_(userId, from, to) {
   t.rows.forEach(row => {
     if (String(row[H.userId]) !== userId) return;
     if (toBool_(row[H.deleted])) return;
-    const d = String(row[H.dateKey]);
-    const k = String(row[H.kind] || '');
-    if (to && d > to) {
-      // 範囲内に始まり、範囲のあとに終わった「終了」記録は時間集計のために含める
-      if (!(k === 'end' && row[H.pairDateKey] && String(row[H.pairDateKey]) <= to)) return;
-    }
-    if (from && d < from) return;
+    if (!inRange_(row, H, from, to)) return;
     out.push(rowToObj_(t.headers, row));
   });
-  out.sort((a, b) => a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0);
-  return out;
+  return sortByTime_(out);
+}
+
+/** 日付の範囲判定（範囲内に始まり、範囲のあとに終わった「終了」記録は時間集計のために含める） */
+function inRange_(row, H, from, to) {
+  const d = String(row[H.dateKey]);
+  const k = String(row[H.kind] || '');
+  if (to && d > to) {
+    if (!(k === 'end' && row[H.pairDateKey] && String(row[H.pairDateKey]) <= to)) return false;
+  }
+  if (from && d < from) return false;
+  return true;
+}
+
+function sortByTime_(arr) {
+  return arr.sort((a, b) => a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0);
 }
 
 function getUserLogs_(userId, from, to, opts) {
@@ -651,7 +689,7 @@ function publicLog_(o, opts) {
   const sealed = isSealed_(o);
   const all = mediaOf_(o);
   const media = sealed ? [] : all.map(m => publicMedia_(m, opts.thumbs));
-  return {
+  const out = {
     logId: o.logId, timestamp: String(o.timestamp), dateKey: String(o.dateKey), hour: Number(o.hour) || 0,
     lat: num_(o.lat), lng: num_(o.lng), accuracy: num_(o.accuracy),
     placeName: o.placeName || '', address: o.address || '', area: o.area || '',
@@ -663,8 +701,16 @@ function publicLog_(o, opts) {
     pairId: o.pairId || '', pairAt: o.pairAt || '', pairDateKey: o.pairDateKey || '',
     durationMin: o.durationMin !== '' && o.durationMin !== undefined ? Number(o.durationMin) : null,
     open: o.kind === 'start' && !o.pairId,
-    hasPhoto: media.some(m => m.type === 'photo')
+    hasPhoto: media.some(m => m.type === 'photo'),
+    private: toBool_(o.private)
   };
+  // メモは memoMap を渡されたときだけ付ける（付けないときは画面側の既存メモを残す）
+  if (opts.memoMap) {
+    const ms = sealed ? [] : (opts.memoMap[o.logId] || []);
+    out.memos = ms;
+    out.memoCount = ms.length;
+  }
+  return out;
 }
 
 /* =========================================================
@@ -674,11 +720,14 @@ function publicLog_(o, opts) {
 function api_analyze(req, u) {
   const period = PERIOD_DAYS[req.period] ? req.period : '1w';
   const r = range_(Object.assign({}, req, { period: period }));
-  const logs = getUserLogs_(u.obj.userId, r.from, r.to);
+  const logs = getUserLogs_(u.obj.userId, r.from, r.to, { memoMap: memoMap_(u.obj.userId) });
   if (!logs.length) throw new Error('この期間の記録がまだありません。まずは記録してみましょう。');
 
   const stats = stats_(logs, r.from, r.to);
-  const notes = logs.filter(l => l.note).slice(-60).map(l => l.dateKey.slice(5) + ' ' + l.category + '：' + l.note.slice(0, 40));
+  const notes = logs.filter(l => l.note || (l.memos && l.memos.length)).slice(-60).map(l => {
+    const memo = (l.memos || []).map(m => m.text.slice(0, 40)).join(' / ');
+    return l.dateKey.slice(5) + ' ' + l.category + '：' + [l.note.slice(0, 40), memo ? 'あとからのメモ「' + memo.slice(0, 80) + '」' : ''].filter(Boolean).join(' ');
+  });
   const funLogs = logs.filter(l => l.fun > 0 || l.media.length);
   const mediaCounts = {};
   funLogs.forEach(l => l.media.forEach(m => { mediaCounts[m.type] = (mediaCounts[m.type] || 0) + 1; }));
@@ -1141,7 +1190,7 @@ function api_addEventPair(req, u) {
     appendObj_(SH.LOGS, eo);
     const t = table_(SH.LOGS);
     repairPairs_(t, u.obj.userId, [so.category]);
-    return { start: publicLog_(findInTable_(t, so.logId).obj, { thumbs: true }), end: publicLog_(findInTable_(t, eo.logId).obj, { thumbs: true }), open: openStarts_(t, u.obj.userId) };
+    return { start: publicLog_(findInTable_(t, so.logId).obj, { thumbs: true, memoMap: {} }), end: publicLog_(findInTable_(t, eo.logId).obj, { thumbs: true, memoMap: {} }), open: openStarts_(t, u.obj.userId) };
   } finally {
     lock.releaseLock();
   }
@@ -1317,7 +1366,12 @@ function api_startUpload(req, u) {
 function api_getMedia(req, u) {
   const hit = findLog_(req.logId, u.obj.userId);
   if (isSealed_(hit.obj)) throw new Error('このタイムカプセルはまだ開けられません。');
-  const m = mediaOf_(hit.obj).filter(x => x.id === req.mediaId)[0];
+  return mediaPayload_(hit.obj, req);
+}
+
+/** 添付ファイルの中身（または再生用URL）を返す。本人・公開相手の両方から使う */
+function mediaPayload_(obj, req) {
+  const m = mediaOf_(obj).filter(x => x.id === req.mediaId)[0];
   if (!m) throw new Error('ファイルが見つかりません。');
   if (m.type === 'url') return { media: publicMedia_(m, false) };
   const file = DriveApp.getFileById(m.fileId);
@@ -1380,7 +1434,7 @@ function api_enrichLog(req, u) {
     hit.obj.media = fitMediaJson_(media);
     updateRow_(hit.t, hit.idx, hit.obj);
   }
-  return { log: publicLog_(hit.obj, { thumbs: true }) };
+  return { log: publicLog_(hit.obj, { thumbs: true, memoMap: memoMap_(u.obj.userId) }) };
 }
 
 function enrichPrompt_(type, o) {
@@ -1439,7 +1493,8 @@ function api_listFun(req, u) {
   if (req.sort === 'fun') list.sort((a, b) => (Number(b.fun) || 0) - (Number(a.fun) || 0) || mediaOf_(b).length - mediaOf_(a).length || (a.timestamp < b.timestamp ? 1 : -1));
   else list.reverse();
   const offset = Math.max(0, Number(req.offset) || 0), limit = Math.min(100, Math.max(1, Number(req.limit) || 48));
-  return { items: list.slice(offset, offset + limit).map(o => publicLog_(o, { thumbs: true })), total: list.length };
+  const memoMap = memoMap_(u.obj.userId);
+  return { items: list.slice(offset, offset + limit).map(o => publicLog_(o, { thumbs: true, memoMap: memoMap })), total: list.length };
 }
 
 /** あの日のあしあと：1〜3年前の今日・1か月前の今日 */
@@ -1461,11 +1516,12 @@ function api_memories(req, u) {
   targets.forEach(t => { want[t.key] = []; });
   getUserRawLogs_(u.obj.userId, '', '').forEach(o => { if (want[o.dateKey]) want[o.dateKey].push(o); });
   const groups = [];
+  const memoMap = memoMap_(u.obj.userId);
   targets.forEach(t => {
     const arr = want[t.key];
     if (!arr.length) return;
     arr.sort((a, b) => ((Number(b.fun) || 0) + mediaOf_(b).length) - ((Number(a.fun) || 0) + mediaOf_(a).length));
-    groups.push({ label: t.label, dateKey: t.key, count: arr.length, logs: arr.slice(0, 6).map(o => publicLog_(o, { thumbs: true })) });
+    groups.push({ label: t.label, dateKey: t.key, count: arr.length, logs: arr.slice(0, 6).map(o => publicLog_(o, { thumbs: true, memoMap: memoMap })) });
   });
   return { groups: groups };
 }
@@ -1481,7 +1537,7 @@ function api_gacha(req, u) {
   const weighted = [];
   pool.forEach(o => { const w = 1 + (Number(o.fun) || 0) * 2 + Math.min(2, mediaOf_(o).length); for (let i = 0; i < w; i++) weighted.push(o); });
   const pick = weighted[Math.floor(Math.random() * weighted.length)];
-  return { log: publicLog_(pick, { thumbs: true }), daysAgo: dayDiff_(pick.dateKey, today), poolSize: pool.length };
+  return { log: publicLog_(pick, { thumbs: true, memoMap: memoMap_(u.obj.userId) }), daysAgo: dayDiff_(pick.dateKey, today), poolSize: pool.length };
 }
 
 /** タイムカプセル：開封できるもの・封印中の数 */
@@ -1501,10 +1557,383 @@ function api_openCapsule(req, u) {
     const hit = findLog_(req.logId, u.obj.userId);
     if (isSealed_(hit.obj)) throw new Error('まだ開けられません（' + hit.obj.capsuleUntil + ' から）。');
     if (!hit.obj.capsuleOpenedAt) { hit.obj.capsuleOpenedAt = nowIso_(); updateRow_(hit.t, hit.idx, hit.obj); }
-    return { log: publicLog_(hit.obj, { thumbs: true }), daysAgo: dayDiff_(hit.obj.dateKey, todayKey_()) };
+    return { log: publicLog_(hit.obj, { thumbs: true, memoMap: memoMap_(u.obj.userId) }), daysAgo: dayDiff_(hit.obj.dateKey, todayKey_()) };
   } finally {
     lock.releaseLock();
   }
+}
+
+/* =========================================================
+ * v1.4.0 メモ（各記録にあとから書き足す・直す・消す）
+ * Memos シート：memoId / userId（記録の持ち主）/ logId / text / createdAt / updatedAt / deleted
+ * ======================================================= */
+
+/** その人のメモを logId ごとに（古い順）まとめる。Memos シートが無ければ空 */
+function memoMap_(userId) {
+  const t = tableOpt_(SH.MEMOS);
+  const map = {};
+  if (!t) return map;
+  const H = colIndex_(t.headers);
+  t.rows.forEach(r => {
+    if (String(r[H.userId]) !== userId || toBool_(r[H.deleted])) return;
+    const id = String(r[H.logId]);
+    (map[id] = map[id] || []).push({
+      memoId: String(r[H.memoId]), text: String(r[H.text]),
+      createdAt: String(r[H.createdAt]), updatedAt: String(r[H.updatedAt] || '')
+    });
+  });
+  Object.keys(map).forEach(k => map[k].sort((a, b) => a.createdAt < b.createdAt ? -1 : 1));
+  return map;
+}
+
+function cleanMemo_(s) {
+  const text = String(s || '').replace(/\r\n/g, '\n').trim().slice(0, MEMO_MAX);
+  if (!text) throw new Error('メモが空です。');
+  return text;
+}
+
+function findMemo_(memoId, userId) {
+  const t = tableOpt_(SH.MEMOS);
+  if (!t) throw new Error('シート「Memos」がありません。GASエディタで setup() を実行してください。');
+  const H = colIndex_(t.headers);
+  for (let i = 0; i < t.rows.length; i++) {
+    const r = t.rows[i];
+    if (String(r[H.memoId]) === String(memoId) && String(r[H.userId]) === userId && !toBool_(r[H.deleted])) {
+      return { t: t, idx: i, obj: rowToObj_(t.headers, r) };
+    }
+  }
+  throw new Error('メモが見つかりません。');
+}
+
+function api_addMemo(req, u) {
+  const text = cleanMemo_(req.text);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const hit = findLog_(req.logId, u.obj.userId);
+    if (isSealed_(hit.obj)) throw new Error('タイムカプセルは開封日までメモを書き足せません。');
+    appendObj_(SH.MEMOS, {
+      memoId: 'M' + Utilities.formatDate(new Date(), tz_(), 'yyMMddHHmmss') + Math.floor(Math.random() * 9000 + 1000),
+      userId: u.obj.userId, logId: hit.obj.logId, text: text, createdAt: nowIso_(), updatedAt: '', deleted: 'FALSE'
+    });
+  } finally {
+    lock.releaseLock();
+  }
+  return { logId: req.logId, memos: memoMap_(u.obj.userId)[req.logId] || [] };
+}
+
+function api_updateMemo(req, u) {
+  const text = cleanMemo_(req.text);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const hit = findMemo_(req.memoId, u.obj.userId);
+    hit.obj.text = text;
+    hit.obj.updatedAt = nowIso_();
+    updateRow_(hit.t, hit.idx, hit.obj);
+    return { logId: hit.obj.logId, memos: memoMap_(u.obj.userId)[hit.obj.logId] || [] };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function api_deleteMemo(req, u) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const hit = findMemo_(req.memoId, u.obj.userId);
+    hit.obj.deleted = 'TRUE';
+    hit.obj.updatedAt = nowIso_();
+    updateRow_(hit.t, hit.idx, hit.obj);
+    return { logId: hit.obj.logId, memos: memoMap_(u.obj.userId)[hit.obj.logId] || [] };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* =========================================================
+ * v1.4.0 指定した会員にだけ公開
+ * Shares シート：shareId / ownerId（見せる人）/ viewerId（見る人）/ viewerEmail / label（表示名）/ group
+ *               / enabled（公開中か）/ geoLevel（exact・area・none）/ createdAt / updatedAt / lastViewedAt
+ * 見る側への絞り込みはすべてここ（サーバー）で行い、許可されていない記録・場所・添付は返さない
+ * ======================================================= */
+
+function sharesTable_() {
+  const t = tableOpt_(SH.SHARES);
+  if (!t) throw new Error('シート「Shares」がありません。GASエディタで setup() を実行してください。');
+  return t;
+}
+
+function usersById_() {
+  const t = table_(SH.USERS);
+  const H = colIndex_(t.headers);
+  const map = {};
+  t.rows.forEach(r => { map[String(r[H.userId])] = { nickname: String(r[H.nickname] || ''), status: String(r[H.status] || ''), prefs: String(r[H.prefs] || '') }; });
+  return map;
+}
+
+function geoLevel_(v) { return GEO_LEVELS.indexOf(String(v)) >= 0 ? String(v) : 'exact'; }
+function shareGroup_(v) { return String(v || '').trim().slice(0, 12); }
+function shareLabel_(v) { return String(v || '').trim().slice(0, 20); }
+
+function publicShare_(o, users) {
+  const v = users[o.viewerId];
+  return {
+    shareId: o.shareId, email: o.viewerEmail, nickname: v ? v.nickname : '',
+    viewerActive: !!v && v.status === 'active',
+    label: o.label || '', group: o.group || '', enabled: toBool_(o.enabled), geoLevel: geoLevel_(o.geoLevel),
+    createdAt: o.createdAt || '', lastViewedAt: o.lastViewedAt || ''
+  };
+}
+
+function myShares_(userId) {
+  const t = tableOpt_(SH.SHARES);
+  if (!t) return [];
+  const H = colIndex_(t.headers);
+  const users = usersById_();
+  const list = [];
+  t.rows.forEach(r => { if (String(r[H.ownerId]) === userId) list.push(publicShare_(rowToObj_(t.headers, r), users)); });
+  return list.sort((a, b) => a.createdAt < b.createdAt ? -1 : 1);
+}
+
+function findOwnShare_(t, shareId, userId) {
+  const H = colIndex_(t.headers);
+  for (let i = 0; i < t.rows.length; i++) {
+    if (String(t.rows[i][H.shareId]) === String(shareId) && String(t.rows[i][H.ownerId]) === userId) {
+      return { idx: i, obj: rowToObj_(t.headers, t.rows[i]) };
+    }
+  }
+  throw new Error('公開相手が見つかりません。');
+}
+
+function api_listShares(req, u) {
+  return { shares: myShares_(u.obj.userId) };
+}
+
+function api_addShare(req, u) {
+  const email = normEmail_(req.email);
+  if (!isEmail_(email)) throw new Error('メールアドレスの形式が正しくありません。');
+  if (email === normEmail_(u.obj.email)) throw new Error('ご自身のメールアドレスは指定できません。');
+  const v = findUser_('email', email);
+  if (!v || v.obj.status !== 'active') {
+    throw new Error('このメールアドレスの会員が見つかりません。相手に先に「' + cfg_('appName', 'あしあと帳') + '」へ登録してもらってください。');
+  }
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const t = sharesTable_();
+    const H = colIndex_(t.headers);
+    let count = 0;
+    t.rows.forEach(r => {
+      if (String(r[H.ownerId]) !== u.obj.userId) return;
+      count++;
+      if (String(r[H.viewerId]) === v.obj.userId) throw new Error('この人はすでに公開相手に入っています。一覧から公開・非公開を切り替えられます。');
+    });
+    if (count >= MAX_SHARES) throw new Error('公開相手は' + MAX_SHARES + '人までです。');
+    const now = nowIso_();
+    appendObj_(SH.SHARES, {
+      shareId: 'S' + Utilities.getUuid().replace(/-/g, '').slice(0, 16),
+      ownerId: u.obj.userId, viewerId: v.obj.userId, viewerEmail: email,
+      label: shareLabel_(req.label), group: shareGroup_(req.group),
+      enabled: 'TRUE', geoLevel: geoLevel_(req.geoLevel), createdAt: now, updatedAt: now, lastViewedAt: ''
+    });
+  } finally {
+    lock.releaseLock();
+  }
+  let mailed = false;
+  if (req.notify) {
+    try { sendShareMail_(email, v.obj.nickname, u.obj.nickname); mailed = true; } catch (e) { /* メールが送れなくても公開はできている */ }
+  }
+  return { shares: myShares_(u.obj.userId), mailed: mailed };
+}
+
+function api_updateShare(req, u) {
+  const f = req.fields || {};
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const t = sharesTable_();
+    const hit = findOwnShare_(t, req.shareId, u.obj.userId);
+    if (f.enabled !== undefined) hit.obj.enabled = f.enabled === true || String(f.enabled).toUpperCase() === 'TRUE' ? 'TRUE' : 'FALSE';
+    if (f.label !== undefined) hit.obj.label = shareLabel_(f.label);
+    if (f.group !== undefined) hit.obj.group = shareGroup_(f.group);
+    if (f.geoLevel !== undefined) hit.obj.geoLevel = geoLevel_(f.geoLevel);
+    hit.obj.updatedAt = nowIso_();
+    updateRow_(t, hit.idx, hit.obj);
+    return { share: publicShare_(hit.obj, usersById_()) };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** グループ単位でまとめて公開・非公開 */
+function api_setGroupShare(req, u) {
+  const group = shareGroup_(req.group);
+  const on = req.enabled === true || String(req.enabled).toUpperCase() === 'TRUE' ? 'TRUE' : 'FALSE';
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const t = sharesTable_();
+    const H = colIndex_(t.headers);
+    t.rows.forEach((r, i) => {
+      if (String(r[H.ownerId]) !== u.obj.userId || shareGroup_(r[H.group]) !== group || String(r[H.enabled]).toUpperCase() === on) return;
+      const o = rowToObj_(t.headers, r);
+      o.enabled = on;
+      o.updatedAt = nowIso_();
+      updateRow_(t, i, o);
+    });
+  } finally {
+    lock.releaseLock();
+  }
+  return { shares: myShares_(u.obj.userId) };
+}
+
+function api_deleteShare(req, u) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const t = sharesTable_();
+    const hit = findOwnShare_(t, req.shareId, u.obj.userId);
+    t.sh.deleteRow(hit.idx + 2);
+  } finally {
+    lock.releaseLock();
+  }
+  return { shares: myShares_(u.obj.userId) };
+}
+
+function sendShareMail_(email, viewerNick, ownerNick) {
+  const app = cfg_('appName', 'あしあと帳');
+  const url = cfg_('appUrl', '');
+  MailApp.sendEmail({
+    to: email, name: app,
+    subject: '【' + app + '】' + (ownerNick || '会員') + 'さんが、あなたにあしあとを公開しました',
+    body: (viewerNick || '') + ' さん\n\n' +
+      (ownerNick || '会員') + 'さんが「' + app + '」で、あなたにあしあと（行動の記録）を公開しました。\n' +
+      'アプリにログインして、下の「みんな」タブから見ることができます（見るだけで、書き込みはできません）。\n' +
+      (url ? '\n' + url + '\n' : '') +
+      '\n※このメールに心当たりがない場合は破棄してください。\n'
+  });
+}
+
+/**
+ * 見る側の権限チェック：自分あての公開で、公開中で、持ち主のアカウントが有効なときだけ通す
+ */
+function viewerShare_(shareId, u) {
+  const off = () => appErr_('この人のあしあとは、いまは見られません（公開が止められたか、取り消されました）。', 'SHARE_OFF');
+  const t = tableOpt_(SH.SHARES);
+  if (!t) throw off();
+  const H = colIndex_(t.headers);
+  for (let i = 0; i < t.rows.length; i++) {
+    const r = t.rows[i];
+    if (String(r[H.shareId]) !== String(shareId)) continue;
+    if (String(r[H.viewerId]) !== u.obj.userId || !toBool_(r[H.enabled])) throw off();
+    const owner = findUser_('userId', String(r[H.ownerId]));
+    if (!owner || owner.obj.status !== 'active') throw off();
+    return { t: t, idx: i, obj: rowToObj_(t.headers, r), owner: owner };
+  }
+  throw off();
+}
+
+/**
+ * 公開相手に見せてよい記録だけを返す
+ * 除くもの：削除済み／「自分だけ」／「自分だけ」の記録とペアの開始・終了／封印中のタイムカプセル
+ */
+function ownerVisibleRaw_(ownerId, from, to, t) {
+  t = t || table_(SH.LOGS);
+  const H = colIndex_(t.headers);
+  const rows = [];
+  const priv = {};
+  t.rows.forEach(row => {
+    if (String(row[H.userId]) !== ownerId || toBool_(row[H.deleted])) return;
+    if (H.private !== undefined && toBool_(row[H.private])) { priv[String(row[H.logId])] = true; return; }
+    rows.push(row);
+  });
+  const out = [];
+  rows.forEach(row => {
+    if (row[H.pairId] && priv[String(row[H.pairId])]) return;
+    if (!inRange_(row, H, from, to)) return;
+    const o = rowToObj_(t.headers, row);
+    if (isSealed_(o)) return;
+    out.push(o);
+  });
+  return sortByTime_(out);
+}
+
+/** 見る側に渡す形：場所は geoLevel に合わせて削る。「自分だけ」フラグなど持ち主用の情報は外す */
+function sharedLog_(o, geo, memoMap, thumbs) {
+  const l = publicLog_(o, { thumbs: thumbs, memoMap: memoMap });
+  delete l.private;
+  delete l.capsuleUntil;
+  if (geo !== 'exact') {
+    l.lat = null; l.lng = null; l.accuracy = null; l.address = '';
+    if (geo === 'area') l.placeName = l.area || '';
+    else { l.placeName = ''; l.area = ''; }
+  }
+  return l;
+}
+
+/** 自分に公開してくれている人の一覧 */
+function api_sharedWithMe(req, u) {
+  const t = tableOpt_(SH.SHARES);
+  if (!t) return { people: [] };
+  const H = colIndex_(t.headers);
+  const users = usersById_();
+  const logs = table_(SH.LOGS);
+  const today = todayKey_();
+  const weekAgo = Utilities.formatDate(new Date(Date.now() - 6 * 86400000), tz_(), 'yyyy-MM-dd');
+  const people = [];
+  t.rows.forEach(r => {
+    if (String(r[H.viewerId]) !== u.obj.userId || !toBool_(r[H.enabled])) return;
+    const ownerId = String(r[H.ownerId]);
+    const owner = users[ownerId];
+    if (!owner || owner.status !== 'active') return;
+    const vis = ownerVisibleRaw_(ownerId, '', today, logs).filter(o => o.kind !== 'end');
+    const last = vis.length ? vis[vis.length - 1] : null;
+    people.push({
+      shareId: String(r[H.shareId]), nickname: owner.nickname || '（名前なし）',
+      since: String(r[H.createdAt] || ''), geoLevel: geoLevel_(r[H.geoLevel]),
+      lastDate: last ? last.dateKey : '', lastAt: last ? last.timestamp : '',
+      recent7: vis.filter(o => o.dateKey >= weekAgo).length
+    });
+  });
+  people.sort((a, b) => a.lastAt < b.lastAt ? 1 : -1);
+  return { people: people };
+}
+
+/** 公開されたあしあと（期間指定、最大62日） */
+function api_sharedLogs(req, u) {
+  const s = viewerShare_(req.shareId, u);
+  if (!validKey_(req.from) || !validKey_(req.to) || req.from > req.to) throw new Error('期間の指定が正しくありません。');
+  if (dayDiff_(req.from, req.to) > SHARE_MAX_DAYS) throw new Error('一度に見られるのは' + SHARE_MAX_DAYS + '日分までです。');
+  const ownerId = s.owner.obj.userId;
+  const geo = geoLevel_(s.obj.geoLevel);
+  const memoMap = memoMap_(ownerId);
+  const logs = ownerVisibleRaw_(ownerId, req.from, req.to).map(o => sharedLog_(o, geo, memoMap, !!req.thumbs));
+
+  // 最後に見た日時（30分に1回だけ書き込む）
+  const last = new Date(s.obj.lastViewedAt || 0).getTime() || 0;
+  if (Date.now() - last > 30 * 60000) {
+    s.obj.lastViewedAt = nowIso_();
+    try { updateRow_(s.t, s.idx, s.obj); } catch (e) { }
+  }
+  const cats = {};
+  (parseJson_(s.owner.obj.prefs, {}).customCats || []).forEach(c => { if (c && c.label) cats[String(c.label)] = String(c.emoji || '📍'); });
+  return { logs: logs, from: req.from, to: req.to, owner: { nickname: s.owner.obj.nickname }, geoLevel: geo, cats: cats };
+}
+
+/** 公開されたあしあとの添付（写真・声・動画） */
+function api_sharedMedia(req, u) {
+  const s = viewerShare_(req.shareId, u);
+  const ownerId = s.owner.obj.userId;
+  const t = table_(SH.LOGS);
+  const hit = findInTable_(t, req.logId);
+  const ng = () => new Error('この記録は見られません。');
+  if (!hit || hit.obj.userId !== ownerId || toBool_(hit.obj.deleted) || toBool_(hit.obj.private) || isSealed_(hit.obj)) throw ng();
+  if (hit.obj.pairId) {
+    const p = findInTable_(t, hit.obj.pairId);
+    if (p && toBool_(p.obj.private)) throw ng();
+  }
+  return mediaPayload_(hit.obj, { mediaId: req.mediaId, preferPreview: req.preferPreview });
 }
 
 /* =========================================================
@@ -1554,6 +1983,11 @@ function table_(name) {
   const values = sh.getDataRange().getValues();
   const headers = (values.shift() || []).map(String);
   return { sh: sh, headers: headers, rows: values };
+}
+
+/** シートが無ければ null（setup 前でも他の機能を止めないため） */
+function tableOpt_(name) {
+  return ss_().getSheetByName(name) ? table_(name) : null;
 }
 
 function colIndex_(headers) {
