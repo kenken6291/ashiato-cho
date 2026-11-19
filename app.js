@@ -1,11 +1,13 @@
-/* あしあと帳 — app.js（SPA） v1.5.0 */
+/* あしあと帳 — app.js（SPA） v1.6.0 */
 (() => {
   'use strict';
 
   const CFG = window.APP_CONFIG || {};
-  const VERSION = CFG.VERSION || 'v1.5.0';
+  const VERSION = CFG.VERSION || 'v1.6.0';
+  const MODEL_OPTIONS = Array.isArray(CFG.GEMINI_MODEL_OPTIONS) && CFG.GEMINI_MODEL_OPTIONS.length
+    ? CFG.GEMINI_MODEL_OPTIONS : [{ value: '', label: '自動モード（汎用の最新）' }];
   const APP_NAME = CFG.APP_NAME || 'あしあと帳';
-  const LS = { token: 'ashiato.token', user: 'ashiato.user', gas: 'ashiato.gasUrl', queue: 'ashiato.queue', mode: 'ashiato.mode', hist: 'ashiato.histView' };
+  const LS = { token: 'ashiato.token', user: 'ashiato.user', gas: 'ashiato.gasUrl', queue: 'ashiato.queue', mode: 'ashiato.mode', hist: 'ashiato.histView', model: 'ashiato.geminiModel' };
 
   const DEFAULT_CATS = [
     { label: 'おもしろ発見', emoji: '🤩' },
@@ -215,6 +217,22 @@
     return /XXXX/.test(u) ? '' : u;
   }
 
+  /** 画面で選んだGeminiモデル（空＝自動）。選択肢にない保存値は無視 */
+  function getModel() {
+    const saved = lsGet(LS.model);
+    if (saved !== null && MODEL_OPTIONS.some(o => o.value === saved)) return saved;
+    return CFG.GEMINI_MODEL || '';
+  }
+  function modelLabel(v) {
+    const o = MODEL_OPTIONS.find(x => x.value === v);
+    return o ? o.label : (v || '自動モード（汎用の最新）');
+  }
+  /** 応答に入っている実際のモデル名を「AIモデル：…」の一行にする */
+  function usedModelText(res) {
+    if (!res || !res.model) return '';
+    return 'AIモデル：' + res.model + (res.modelFallback ? '（' + res.requestedModel + ' が使えなかったため自動で切替）' : '');
+  }
+
   async function api(action, data, opts) {
     data = data || {}; opts = opts || {};
     const url = getGasUrl();
@@ -224,7 +242,7 @@
       res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(Object.assign({}, data, { action: action, token: state.token || '' }))
+        body: JSON.stringify(Object.assign({}, data, { action: action, token: state.token || '', model: getModel() }))
       });
     } catch (e) {
       const err = new Error('サーバーにつながりません。電波の状態を確かめてください。');
@@ -2712,12 +2730,13 @@
     const r = periodRange(state.period);
     try {
       const res = await withLoading('AIが' + r.label + 'のあしあとを読んでいます…', () => api('analyze', { period: state.period, from: r.from, to: r.to }));
-      renderReport(res.report);
+      renderReport(res.report, usedModelText(res));
+      if (res.modelFallback) toast('選んだモデルが使えなかったため ' + res.model + ' で分析しました');
       loadReports();
     } catch (e) { toast(e.message, 'err'); }
   }
 
-  function renderReport(rep) {
+  function renderReport(rep, modelNote) {
     stopAudio();
     const box = $('#report');
     const hl = (rep.highlights || []).map(h => '<li>' + esc(h) + '</li>').join('');
@@ -2731,6 +2750,7 @@
       (rep.changes ? '<div class="part"><b>変わってきたこと</b>' + esc(rep.changes) + '</div>' : '') +
       (rep.growth ? '<div class="part"><b>続いていること</b>' + esc(rep.growth) + '</div>' : '') +
       (rep.nextIdea ? '<div class="part"><b>次に試してみたいこと</b>' + esc(rep.nextIdea) + '</div>' : '') +
+      (modelNote ? '<p class="meta model-used">' + esc(modelNote) + '</p>' : '') +
       '<div class="listen"><button type="button" class="btn btn-primary" id="btn-tts">🔊 音声で聴く</button>' +
       '<audio id="report-audio" controls preload="none" hidden></audio></div>';
     box.hidden = false;
@@ -2798,6 +2818,23 @@
     loadShares();
     loadLinks();
     $('#set-gas').textContent = '接続先：' + (getGasUrl() ? getGasUrl().replace(/(.{48}).+(.{8})$/, '$1…$2') : '未設定');
+    renderModelPicker();
+  }
+
+  /* ================= AIモデル選択 ================= */
+  function renderModelPicker() {
+    const sel = $('#model-select');
+    if (!sel) return;
+    if (!sel.options.length) {
+      sel.innerHTML = MODEL_OPTIONS.map(o => '<option value="' + esc(o.value) + '">' + esc(o.label) + '</option>').join('');
+      sel.addEventListener('change', () => {
+        lsSet(LS.model, sel.value);
+        $('#model-now').textContent = '今の設定：' + modelLabel(sel.value);
+        toast('AIモデルを「' + modelLabel(sel.value) + '」にしました');
+      });
+    }
+    sel.value = getModel();
+    $('#model-now').textContent = '今の設定：' + modelLabel(getModel());
   }
 
   async function savePrefs(prefs) {

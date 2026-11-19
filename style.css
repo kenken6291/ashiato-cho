@@ -868,3 +868,7 @@ input:focus, textarea:focus, .select:focus { border-color: var(--moss); outline:
 .link-main { padding-bottom: 40px; }
 .link-cta { margin-top: 18px; text-align: center; }
 .link-cta .btn { margin-top: 10px; }
+
+/* v1.6.0 AIモデル選択 */
+.model-panel .select { width: 100%; }
+.report .model-used, #report .model-used { font-size: .78rem; margin-top: 10px; }

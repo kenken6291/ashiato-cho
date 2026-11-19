@@ -1,4 +1,4 @@
-# あしあと帳（ashiato-cho） v1.5.0
+# あしあと帳（ashiato-cho） v1.6.0
 
 どこで何をしたかをスマホからワンタップで記録し、1週間〜3年の単位でグラフ・Gemini AI・音声（Gemini TTS）・Google Earth Studio の3D空撮で振り返るWebアプリです。
 
@@ -436,3 +436,19 @@ GAS URL はアプリ内「接続設定」からも端末ごとに上書きでき
 1. `Code.gs` を置き換えて **`setup()` を実行**（Links シートができます）。
 2. **デプロイを管理 → 新バージョン** でデプロイ。
 3. GitHub の `index.html` `app.js` `style.css` `config.js` `sw.js` を置き換え。
+
+## 15. v1.6.0：Geminiモデルの選択
+
+- 「設定 → AIモデル（Gemini）」で、振り返り分析・自動キャプション・文字起こしに使うモデルを選べます（端末ごとに保存）。
+  - 自動モード（汎用の最新）／4 Hydrogen／4 Neon／4 Carbon／4 Argon／3.8 Flash／3.5 Flash
+  - 選択肢は `config.js` の `GEMINI_MODEL_OPTIONS` で増減できます。
+- 選んだモデルに該当がない（廃止・未公開・名前違い）ときは、GAS が `gemini-flash-latest` → `gemini-4-hydrogen` → `gemini-3.8-flash` の順に自動で切り替えて再実行します。振り返りの下に実際に使ったモデルを表示します。
+- 自動モードのときは、スクリプトプロパティ `GEMINI_MODEL` に値があればそれを使い、空なら汎用の最新モデルを使います。
+- TTS（読み上げ）は従来どおりスクリプトプロパティ `GEMINI_TTS_MODEL` / `GEMINI_TTS_VOICE` で指定します。
+- GASエディタで `testGeminiModels()` を実行すると、各モデルが使えるか（○／×）をログで確認できます。
+
+### v1.5.0 からの更新手順
+1. `Code.gs` を置き換え（`setup()` の再実行は不要）。
+2. 自動モードを「最新」にしたい場合は、スクリプトプロパティ `GEMINI_MODEL`（以前の `gemini-2.5-flash`）を削除するか空にします。
+3. **デプロイを管理 → 編集 → 新しいバージョン** でデプロイ。
+4. GitHub の `index.html` `app.js` `style.css` `config.js` `sw.js` `README.md` を置き換え。

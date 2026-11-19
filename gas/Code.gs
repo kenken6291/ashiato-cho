@@ -5,13 +5,16 @@
  * 時間記録：「開始」「終了」をそれぞれ時刻として記録し、あとで差分（所要時間）を計算して保存
  * v1.4.0：各記録へのメモ（追記・編集・削除）／指定した会員にだけ公開（公開相手の管理・閲覧）
  * v1.5.0：公開はデフォルト非公開（private 列が FALSE のものだけ公開）／LINEなどで送れる共有リンク（ログイン不要で見られる）
+ * v1.6.0：Geminiモデルを画面で選べるように（自動／4 Hydrogen／4 Neon／4 Carbon／4 Argon／3.8 Flash／3.5 Flash）
+ *         指定モデルに該当がない（廃止・未公開・名前違い）時は汎用の最新モデルへ自動で切り替えて再実行
  *
  * 初回のみ：エディタで setup() を実行 → スクリプトプロパティに GEMINI_API_KEY を設定 → ウェブアプリとしてデプロイ
- * Gemini のモデルはスクリプトプロパティ GEMINI_MODEL / GEMINI_TTS_MODEL / GEMINI_TTS_VOICE で指定（setup() が初期値を入れます）
+ * Gemini のモデルは画面（設定 → AIモデル）で選択。自動モードのときはスクリプトプロパティ GEMINI_MODEL → 汎用の最新モデルの順
+ * TTS はスクリプトプロパティ GEMINI_TTS_MODEL / GEMINI_TTS_VOICE で指定（setup() が初期値を入れます）
  * ※コードを変更したら「デプロイを管理 → 編集 → 新しいバージョン」で再デプロイしないと反映されません
  */
 
-const APP_VERSION = 'v1.5.0';
+const APP_VERSION = 'v1.6.0';
 const MAX_SPAN_MS = 7 * 86400000; // 1つの時間記録の最長（7日）
 const MEDIA_TYPES = ['photo', 'video', 'audio', 'drawing', 'url'];
 const MAX_MEDIA = 6;
@@ -48,22 +51,50 @@ const DEFAULT_CONFIG = [
 ];
 
 /**
- * Gemini のモデル指定はスクリプトプロパティで行う（コード変更・シート編集なしで切り替え可能）
- *   GEMINI_MODEL      … 分析・キャプション・文字起こし用
- *   GEMINI_TTS_MODEL  … 音声合成（TTS）用
- *   GEMINI_TTS_VOICE  … TTSのボイス名
- * プロパティが空のときだけ下の既定値を使う
+ * Gemini のモデル指定
+ *   分析・キャプション・文字起こし用（text）
+ *     1. 画面で選んだモデル（リクエストの model。空＝自動モード）
+ *     2. スクリプトプロパティ GEMINI_MODEL（空なら飛ばす）
+ *     3. 汎用の最新モデル FALLBACK_GEMINI_MODELS の先頭
+ *     ※ 指定モデルに該当がない時は FALLBACK_GEMINI_MODELS を順に試して自動で切り替える
+ *   GEMINI_TTS_MODEL  … 音声合成（TTS）用（スクリプトプロパティ）
+ *   GEMINI_TTS_VOICE  … TTSのボイス名（スクリプトプロパティ）
  */
 const MODEL_PROPS = {
-  text: { key: 'GEMINI_MODEL', def: 'gemini-2.5-flash' },
+  text: { key: 'GEMINI_MODEL', def: '' },
   tts: { key: 'GEMINI_TTS_MODEL', def: 'gemini-2.5-flash-preview-tts' },
   voice: { key: 'GEMINI_TTS_VOICE', def: 'Kore' }
 };
+// 指定なし・該当なしの時に使う汎用最新モデル（先頭から順に試す）
+//   gemini-flash-latest : Googleが常に最新の汎用モデルへ自動で差し替えるエイリアス
+//   gemini-4-hydrogen   : 2026年11月時点の汎用最新モデル（日々の暮らしをサポート）
+//   gemini-3.8-flash    : 最終的な保険
+const FALLBACK_GEMINI_MODELS = ['gemini-flash-latest', 'gemini-4-hydrogen', 'gemini-3.8-flash'];
+const GEMINI_MODEL_PATTERN = /^gemini-[a-z0-9][a-z0-9.\-]{0,60}$/;
+
+// 1回のリクエスト内だけで使う値（doPost で毎回リセット）
+let REQ_MODEL_ = '';   // 画面で選ばれたモデル（空＝自動）
+let USED_MODEL_ = '';  // 実際に応答したテキスト用モデル
+let ASKED_MODEL_ = ''; // 最初に試したテキスト用モデル
 
 function model_(kind) {
+  if (kind === 'text') return resolveTextModel_();
   const m = MODEL_PROPS[kind];
   const v = PropertiesService.getScriptProperties().getProperty(m.key);
   return v && String(v).trim() ? String(v).trim() : m.def;
+}
+
+/** テキスト用モデル：画面の選択 → スクリプトプロパティ → 汎用の最新モデル */
+function resolveTextModel_() {
+  if (REQ_MODEL_) return REQ_MODEL_;
+  const prop = String(PropertiesService.getScriptProperties().getProperty('GEMINI_MODEL') || '').trim().toLowerCase();
+  if (prop && GEMINI_MODEL_PATTERN.test(prop)) return prop;
+  return FALLBACK_GEMINI_MODELS[0];
+}
+
+function cleanModel_(v) {
+  const m = String(v || '').trim().toLowerCase();
+  return m && GEMINI_MODEL_PATTERN.test(m) ? m : '';
 }
 
 const PERIOD_DAYS = { '1w': 7, '1m': 30, '3m': 91, '1y': 365, '2y': 730, '3y': 1095 };
@@ -74,7 +105,10 @@ const PERIOD_LABEL = { '1w': '1週間', '1m': '1か月', '3m': '四半期', '1y'
  * ======================================================= */
 
 function doGet(e) {
-  return json_({ ok: true, app: cfg_('appName', 'あしあと帳'), version: APP_VERSION, time: new Date().toISOString() });
+  return json_({
+    ok: true, app: cfg_('appName', 'あしあと帳'), version: APP_VERSION, time: new Date().toISOString(),
+    defaultModel: resolveTextModel_(), fallbackModels: FALLBACK_GEMINI_MODELS
+  });
 }
 
 /**
@@ -85,6 +119,9 @@ function doPost(e) {
   try {
     const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     const action = String(req.action || '');
+    REQ_MODEL_ = cleanModel_(req.model);
+    USED_MODEL_ = '';
+    ASKED_MODEL_ = '';
     if (Object.prototype.hasOwnProperty.call(PUBLIC_API, action)) {
       out = PUBLIC_API[action](req);
     } else if (Object.prototype.hasOwnProperty.call(PRIVATE_API, action)) {
@@ -94,6 +131,11 @@ function doPost(e) {
       throw new Error('不明な操作です: ' + action);
     }
     out = Object.assign({ ok: true, version: APP_VERSION }, out || {});
+    if (USED_MODEL_) {
+      out.model = USED_MODEL_;
+      out.requestedModel = ASKED_MODEL_;
+      out.modelFallback = USED_MODEL_ !== ASKED_MODEL_;
+    }
   } catch (err) {
     out = { ok: false, error: (err && err.message) || String(err), code: (err && err.code) || '' };
   }
@@ -192,7 +234,7 @@ function setup() {
   // モデル指定のスクリプトプロパティが無ければ初期値を入れておく（あとで書き換えて使う）
   Object.keys(MODEL_PROPS).forEach(k => {
     const m = MODEL_PROPS[k];
-    if (!props.getProperty(m.key)) props.setProperty(m.key, m.def);
+    if (m.def && !props.getProperty(m.key)) props.setProperty(m.key, m.def);
   });
   const root = rootFolder_();
   migrateSpans_(); // v1.2.0 の「計測」形式を「開始」「終了」の2件に変換
@@ -2130,22 +2172,55 @@ function api_linkMedia(req) {
  * Gemini 呼び出し
  * ======================================================= */
 
+/**
+ * Gemini 呼び出し。
+ * テキスト用モデルは、該当がない（廃止・未公開・名前違い）時に汎用の最新モデルへ順に切り替えて再実行する。
+ * TTS（音声出力）はモデルの系統が違うので切り替えない。
+ */
 function gemini_(model, body) {
   const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
   if (!key) throw new Error('GEMINI_API_KEY が未設定です（GASのスクリプトプロパティ）。');
+  const mods = (body && body.generationConfig && body.generationConfig.responseModalities) || [];
+  const isTts = mods.indexOf('AUDIO') >= 0;
+  const candidates = isTts ? [model] : [model].concat(FALLBACK_GEMINI_MODELS.filter(m => m !== model));
+  let last = null;
+  for (let i = 0; i < candidates.length; i++) {
+    last = callGeminiModel_(candidates[i], key, body);
+    if (last.code === 200) {
+      if (!isTts) { USED_MODEL_ = candidates[i]; ASKED_MODEL_ = model; }
+      return JSON.parse(last.text);
+    }
+    if (!isModelNotFound_(last.code, last.text)) break;
+    console.warn('Geminiモデル「' + candidates[i] + '」に該当がないため次の候補に切り替えます');
+  }
+  let msg = last.text;
+  try { msg = JSON.parse(msg).error.message; } catch (e) { }
+  throw new Error('Gemini APIエラー（' + last.code + '／' + last.model + '）：' + String(msg).slice(0, 200));
+}
+
+/** 1つのモデルを呼ぶ。混雑（429/5xx）時は待ち時間を伸ばしながら最大3回 */
+function callGeminiModel_(model, key, body) {
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent';
+  let code = 0, text = '';
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = UrlFetchApp.fetch(url, {
       method: 'post', contentType: 'application/json', headers: { 'x-goog-api-key': key },
       payload: JSON.stringify(body), muteHttpExceptions: true
     });
-    const code = res.getResponseCode();
-    if (code === 200) return JSON.parse(res.getContentText());
+    code = res.getResponseCode();
+    text = res.getContentText();
+    if (code === 200) break;
     if ((code === 429 || code >= 500) && attempt < 2) { Utilities.sleep(2000 * (attempt + 1)); continue; }
-    let msg = res.getContentText();
-    try { msg = JSON.parse(msg).error.message; } catch (e) { }
-    throw new Error('Gemini APIエラー（' + code + '）：' + String(msg).slice(0, 200));
+    break;
   }
+  return { model: model, code: code, text: text };
+}
+
+/** モデルが存在しない（廃止・名前違い）ことを示す応答か */
+function isModelNotFound_(code, text) {
+  if (code === 404) return true;
+  if (code === 400) return /not found|is not supported|NOT_FOUND|unknown model|invalid model/i.test(String(text || ''));
+  return false;
 }
 
 function geminiJson_(model, prompt, temperature) {
@@ -2330,9 +2405,20 @@ function adminSetStatus(email, status) {
 
 /** Gemini API キーとテキスト用モデル（GEMINI_MODEL）の動作確認 */
 function testGemini() {
-  Logger.log('GEMINI_MODEL = ' + model_('text'));
+  Logger.log('自動モードで使うモデル = ' + model_('text'));
   const r = geminiJson_(model_('text'), '{"ok":true} というJSONだけを返してください。', 0);
-  Logger.log(JSON.stringify(r));
+  Logger.log('実際に応答したモデル = ' + USED_MODEL_ + ' → ' + JSON.stringify(r));
+}
+
+/** 画面の選択肢（config.js と同じ並び）が使えるかを1つずつ確かめる（切り替えなしで直接呼ぶ） */
+function testGeminiModels() {
+  const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  const body = { contents: [{ role: 'user', parts: [{ text: 'OK とだけ返してください。' }] }] };
+  ['gemini-flash-latest', 'gemini-4-hydrogen', 'gemini-4-neon', 'gemini-4-carbon', 'gemini-4-argon', 'gemini-3.8-flash', 'gemini-3.5-flash']
+    .forEach(m => {
+      const r = callGeminiModel_(m, key, body);
+      Logger.log((r.code === 200 ? '○ ' : '× ') + m + '（' + r.code + '）');
+    });
 }
 
 /** TTS用モデル（GEMINI_TTS_MODEL）とボイス（GEMINI_TTS_VOICE）の動作確認：ドライブに test_tts.wav を作ります */
